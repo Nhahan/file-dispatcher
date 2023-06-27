@@ -1,6 +1,6 @@
 # File Dispatcher
 
-File Dispatcher is a Node.js library for file monitoring and dispatching. It provides the ability to handle file events such as creation or renaming in either asynchronous or synchronous mode. This library utilizes the `chokidar` package for efficient file system monitoring.
+File Dispatcher is a high-performing Node.js library for file event monitoring and dispatching. It efficiently handles file creation or renaming events, providing real-time responses in both synchronous and asynchronous modes. Compact yet powerful, it's ideal for event-driven file system interactions.
 
 ### Features
 

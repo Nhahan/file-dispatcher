@@ -16,7 +16,15 @@
   "bugs": {
     "url": "https://github.com/Nhahan/file-dispatcher/issues"
   },
-  "keywords": ["asynchronous", "synchronous", "filereader", "event", "realtime", "monitoring", "cdc"],
+  "keywords": [
+    "asynchronous",
+    "synchronous",
+    "filereader",
+    "event",
+    "realtime",
+    "monitoring",
+    "cdc"
+  ],
   "author": "https://github.com/Nhahan",
   "license": "MIT",
   "devDependencies": {
