@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "es5",
+    "module": "commonjs",
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "lib": ["es6"],
+    "strict": true
+  },
+  "include": [
+    "src/**/*.ts", // TypeScript 소스 코드의 경로
+    "test/**/*.ts" // Jest 테스트 파일의 경로
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
