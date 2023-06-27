@@ -5,7 +5,7 @@ module.exports = {
   entry: './src/file-dispatcher.ts',
   output: {
     path: path.resolve(__dirname, 'dist'),
-    filename: 'index.js',
+    filename: 'file-dispatcher.js',
     library: 'FileDispatcher',
     libraryTarget: 'commonjs2',
     globalObject: 'this',
