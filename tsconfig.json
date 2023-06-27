@@ -1,15 +1,17 @@
 {
   "compilerOptions": {
-    "target": "es2020",
+    "target": "es6",
     "module": "commonjs",
     "esModuleInterop": true,
     "resolveJsonModule": true,
-    "lib": ["es2020"],
+    "declaration": true,
+    "outDir": "dist",
+    "lib": ["es5", "es6"],
     "strict": true
   },
   "include": [
-    "src/**/*.ts", // TypeScript 소스 코드의 경로
-    "test/**/*.ts" // Jest 테스트 파일의 경로
+    "src/file-dispatcher.ts",
+    "test/**/*.ts"
   ],
   "exclude": [
     "node_modules"
