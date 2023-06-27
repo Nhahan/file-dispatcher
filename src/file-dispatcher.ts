@@ -28,7 +28,7 @@ export class FileDispatcher extends EventEmitter {
     try {
       const content = await promisify(fs.readFile)(filePath, 'utf8');
       this.emit(FdEventType.Success, filePath, content);
-    } catch (error) {
+    } catch (error: any) {
       this.emit(FdEventType.Fail, error);
     }
   }
@@ -37,20 +37,20 @@ export class FileDispatcher extends EventEmitter {
     try {
       const content = fs.readFileSync(filePath, 'utf8');
       this.emit(FdEventType.Success, filePath, content);
-    } catch (error) {
+    } catch (error: any) {
       this.emit(FdEventType.Fail, error);
     }
   }
 
   start(): void {
     if (this.watcher) {
-      console.log("[FileDispatcher] Already started.")
+      console.log("[FileDispatcher] Already started.");
       return;
     }
 
-    this.watcher = fs.watch(this.directory, { encoding: 'utf8' }, async (eventType, filename) => {
-      if (eventType === 'rename' && filename && (!this.pattern || filename.match(this.pattern))) {
-        const filePath = path.join(this.directory, filename);
+    this.watcher = fs.watch(this.directory, { encoding: 'utf8' }, async (eventType: string, filename: string | Buffer) => {
+      if (eventType === 'rename' && filename && (!this.pattern || filename.toString().match(this.pattern))) {
+        const filePath = path.join(this.directory, filename.toString());
         if (this.executionMode === FdMode.Async) {
           await this.processFileAsync(filePath);
         } else {

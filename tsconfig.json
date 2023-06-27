@@ -1,14 +1,18 @@
 {
   "compilerOptions": {
     "target": "es6",
-    "module": "commonjs",
+    "module": "es6",
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "declaration": true,
     "outDir": "dist",
     "lib": ["es5", "es6"],
-    "strict": true
+    "strict": true,
+    "moduleResolution": "node"
+  },
+  "ts-node": {
+    "esm": true
   },
   "exclude": ["node_modules", "dist"],
-  "include": ["src"]
+  "include": ["src", "test"]
 }
