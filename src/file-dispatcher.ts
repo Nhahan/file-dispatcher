@@ -66,7 +66,7 @@ export class FileDispatcher extends EventEmitter {
 
   private async dispatchFileSync(filePath: string): Promise<void> {
     try {
-      const fileContent = await promisify(fs.readFile)(filePath, 'utf8');
+      const fileContent = fs.readFileSync(filePath, 'utf8');
       this.emit(FdEventType.Success, filePath, fileContent);
     } catch (error) {
       this.emit(FdEventType.Fail, error);
