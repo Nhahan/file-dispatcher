@@ -48,7 +48,7 @@ export class FileDispatcher extends EventEmitter {
       return;
     }
 
-    this.watcher = fs.watch(this.directory, { encoding: 'utf8' }, async (eventType: string, filename: string | Buffer) => {
+    this.watcher = fs.watch(this.directory, { persistent: true }, async (eventType: string, filename: Buffer | string | null) => {
       if (eventType === 'rename' && filename && (!this.pattern || filename.toString().match(this.pattern))) {
         const filePath = path.join(this.directory, filename.toString());
         if (this.executionMode === FdMode.Async) {
