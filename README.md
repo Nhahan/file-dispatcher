@@ -31,7 +31,7 @@ const dispatcher = new FileDispatcher('/path/to/directory', FdMode.Async, /\.txt
 
 - `/path/to/directory`: The directory to monitor for file events.
 - `FdMode.Async`: Execution mode set to asynchronous. Use FdMode.Sync for synchronous execution.
-- `/\.txt$/`: Optional regular expression pattern to filter specific file types. Pass undefined for no filtering.
+- `/\.txt$/`: Optional regular expression pattern to filter specific file types. Leave it empty for no filtering.
 
 ### Starting and Stopping the FileDispatcher
 

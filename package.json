@@ -1,6 +1,6 @@
 {
   "name": "file-dispatcher",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "description": "Node.js library for file monitoring and dispatching, providing asynchronous or synchronous handling of file events such as creation or renaming.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,7 +16,7 @@
   "bugs": {
     "url": "https://github.com/Nhahan/file-dispatcher/issues"
   },
-  "keywords": ["live file monitoring", "ordered file processor", "asynchronous file processor", "async file reader", "realtime file monitoring", "queue file reader", "live file tracker", "npm cdc", "synchronous file reader"],
+  "keywords": ["asynchronous", "synchronous", "filereader", "event", "realtime", "monitoring", "cdc"],
   "author": "https://github.com/Nhahan",
   "license": "MIT",
   "devDependencies": {
