@@ -1,6 +1,6 @@
-cp dist/mjs/file-dispatcher.d.ts dist
+cp dist/mjs/index.d.ts dist
 
-rm -rf dist/*/file-dispatcher.d.ts
+rm -rf dist/*/index.d.ts
 
 cat >dist/cjs/package.json <<!EOF
 {

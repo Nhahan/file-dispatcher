@@ -1,4 +1,4 @@
-import { FileDispatcher, FdMode, FdEventType } from '../src/file-dispatcher';
+import { FileDispatcher, FdMode, FdEventType } from '../src';
 
 const dispatcher = new FileDispatcher('./test', FdMode.Async);
 

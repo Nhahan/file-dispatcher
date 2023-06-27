@@ -2,10 +2,10 @@ const path = require('path');
 
 module.exports = {
   mode: 'production',
-  entry: './src/file-dispatcher.ts',
+  entry: './src/index.ts',
   output: {
     path: path.resolve(__dirname, 'dist'),
-    filename: 'file-dispatcher.js',
+    filename: 'index.js',
     library: 'FileDispatcher',
     libraryTarget: 'commonjs2',
     globalObject: 'this',
