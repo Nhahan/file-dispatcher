@@ -14,7 +14,7 @@ export enum FdMode {
 }
 
 export class FileDispatcher extends EventEmitter {
-  private watcher: chokidar.FSWatcher;
+  private readonly watcher: chokidar.FSWatcher;
 
   constructor(
       private readonly directory: string,
@@ -23,7 +23,7 @@ export class FileDispatcher extends EventEmitter {
   ) {
     super();
     this.watcher = chokidar.watch(directory, {
-      ignored: /(^|[/\\])\../, // 숨겨진 파일 및 폴더 무시
+      ignored: /(^|[/\\])\../,
       persistent: true,
     });
   }
@@ -34,15 +34,14 @@ export class FileDispatcher extends EventEmitter {
       return;
     }
 
-    this.watcher
+    (this.watcher as chokidar.FSWatcher)
         .on('add', (filePath) => this.processFile(filePath))
         .on('change', (filePath) => this.processFile(filePath));
   }
 
   stop(): void {
     if (this.watcher) {
-      this.watcher.close();
-      this.watcher = undefined;
+      this.watcher.close().then(() => '[FileDispatcher] Closed.');
     }
   }
 
