@@ -4,6 +4,7 @@
 # Build output
 /dist
 /build
+index.js
 
 # Environment variables
 .env

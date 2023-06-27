@@ -1,10 +1,10 @@
 {
   "compilerOptions": {
-    "target": "es5",
+    "target": "es2020",
     "module": "commonjs",
     "esModuleInterop": true,
     "resolveJsonModule": true,
-    "lib": ["es6"],
+    "lib": ["es2020"],
     "strict": true
   },
   "include": [
