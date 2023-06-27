@@ -8,18 +8,15 @@
     "dist"
   ],
   "scripts": {
-    "prepack": "npm run build:tsc",
+    "prepack": "npm run build",
     "build": "webpack",
-    "build:tsc": "npm run build:tsc",
     "test": "jest"
   },
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
+  "homepage": "https://github.com/Nhahan/file-dispatcher",
+  "bugs": {
+    "url": "https://github.com/Nhahan/file-dispatcher/issues"
   },
-  "keywords": [],
+  "keywords": ["live file monitoring", "ordered file processor", "asynchronous file processor", "async file reader", "realtime file monitoring", "queue file reader", "live file tracker", "npm cdc", "synchronous file reader"],
   "author": "https://github.com/Nhahan",
   "license": "MIT",
   "devDependencies": {
