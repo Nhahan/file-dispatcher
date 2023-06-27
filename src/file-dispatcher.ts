@@ -1,8 +1,7 @@
 import * as fs from 'fs';
-import { EventEmitter } from 'events';
-import { Worker } from 'worker_threads';
 import * as path from 'path';
-import os from 'os';
+import { EventEmitter } from 'events';
+import { promisify } from 'util';
 
 export enum FdEventType {
   Success = 'FdEventType.Success',
@@ -16,9 +15,6 @@ export enum FdMode {
 
 export class FileDispatcher extends EventEmitter {
   private watcher?: fs.FSWatcher;
-  private workers: Worker[] = [];
-  private workerCount: number = os.cpus().length - 1;
-  private queue: string[] = [];
 
   constructor(
       private readonly directory: string,
@@ -26,35 +22,23 @@ export class FileDispatcher extends EventEmitter {
       private pattern?: RegExp
   ) {
     super();
+  }
 
-    for (let i = 0; i < this.workerCount; i++) {
-      const worker = new Worker(`
-        const p=require('worker_threads').parentPort,f=require('fs');
-        p.on('message',({filePath:d})=>{
-          try{p.postMessage({s:1,c:f.readFileSync(d,'utf8')})}
-          catch(e){p.postMessage({s:0,e})}});
-      `, { eval: true });
+  private async processFileAsync(filePath: string): Promise<void> {
+    try {
+      const content = await promisify(fs.readFile)(filePath, 'utf8');
+      this.emit(FdEventType.Success, filePath, content);
+    } catch (error) {
+      this.emit(FdEventType.Fail, error);
+    }
+  }
 
-      worker.on('message', (data: { s: boolean, c?: string, e?: any }) => {
-        if (data.s) {
-          this.emit(FdEventType.Success, this.queue[0], data.c);
-        } else {
-          this.emit(FdEventType.Fail, data.e);
-        }
-        this.queue.shift();
-        if (this.executionMode === FdMode.Sync && this.queue.length > 0) {
-          worker.postMessage({ filePath: this.queue[0], mode: this.executionMode });
-        } else {
-          this.workers.push(worker);
-        }
-      });
-
-      worker.on('error', (error) => {
-        this.emit(FdEventType.Fail, error);
-        this.workers.push(worker);
-      });
-
-      this.workers.push(worker);
+  private processFileSync(filePath: string): void {
+    try {
+      const content = fs.readFileSync(filePath, 'utf8');
+      this.emit(FdEventType.Success, filePath, content);
+    } catch (error) {
+      this.emit(FdEventType.Fail, error);
     }
   }
 
@@ -64,17 +48,13 @@ export class FileDispatcher extends EventEmitter {
       return;
     }
 
-    this.watcher = fs.watch(this.directory, { encoding: 'utf8' }, (eventType, filename) => {
+    this.watcher = fs.watch(this.directory, { encoding: 'utf8' }, async (eventType, filename) => {
       if (eventType === 'rename' && filename && (!this.pattern || filename.match(this.pattern))) {
         const filePath = path.join(this.directory, filename);
-        if (this.executionMode === FdMode.Async || this.workers.length === 0) {
-          this.queue.push(filePath);
-        }
-        if (this.workers.length > 0) {
-          const worker = this.workers.shift() as Worker;
-          if (this.executionMode === FdMode.Async || (this.executionMode === FdMode.Sync && this.queue.length === 1)) {
-            worker.postMessage({ filePath: filePath, mode: this.executionMode });
-          }
+        if (this.executionMode === FdMode.Async) {
+          await this.processFileAsync(filePath);
+        } else {
+          this.processFileSync(filePath);
         }
       }
     });
@@ -84,7 +64,6 @@ export class FileDispatcher extends EventEmitter {
     if (this.watcher) {
       this.watcher.close();
       this.watcher = undefined;
-      this.workers.forEach(worker => worker.terminate());
     }
   }
 }

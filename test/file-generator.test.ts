@@ -10,7 +10,7 @@ describe('File Creation Test', () => {
     });
 
     afterAll(() => {
-        // deleteTestFiles(directory, fileCount);
+        deleteTestFiles(directory, fileCount);
     });
 
     test(`Create ${fileCount} random txt files`, () => {
