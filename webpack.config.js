@@ -7,15 +7,11 @@ module.exports = {
     path: path.resolve(__dirname, 'dist'),
     filename: 'index.js',
     library: 'FileDispatcher',
-    libraryTarget: 'umd',
+    libraryTarget: 'commonjs2',
     globalObject: 'this',
   },
   module: {
     rules: [
-      {
-        test: /\.node$/,
-        loader: 'node-loader',
-      },
       {
         test: /\.ts$/,
         use: 'ts-loader',
@@ -24,14 +20,7 @@ module.exports = {
     ],
   },
   resolve: {
-    fallback: {
-      fs: false,
-      util: require.resolve('util'),
-      path: require.resolve('path-browserify'),
-      stream: require.resolve('stream-browserify'),
-      buffer: require.resolve('buffer'),
-      os: require.resolve('os-browserify/browser'),
-    },
     extensions: ['.ts', '.js'],
   },
+  target: 'node',
 };
