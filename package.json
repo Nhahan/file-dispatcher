@@ -1,6 +1,6 @@
 {
   "name": "file-dispatcher",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "File Dispatcher is a high-performing Node.js library for file event monitoring and dispatching. It efficiently handles file creation or renaming events, providing real-time responses in both synchronous and asynchronous modes. Compact yet powerful, it's ideal for event-driven file system interactions.",
   "main": "dist/cjs/index.js",
@@ -14,7 +14,7 @@
   },
   "scripts": {
     "prepack": "npm run build",
-    "build": "rm -fr dist/* && webpack && tsc -p tsconfig.json && tsc -p tsconfig-cjs.json && chmod +x fixup.sh && ./fixup.sh",
+    "build": "rm -fr dist/* && tsc -p tsconfig.json && tsc -p tsconfig-cjs.json && ./fixup.sh",
     "test": "jest"
   },
   "homepage": "https://github.com/Nhahan/file-dispatcher",
