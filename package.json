@@ -25,6 +25,7 @@
     "webpack-cli": "^5.1.4"
   },
   "dependencies": {
+    "chokidar": "^3.5.3",
     "path-browserify": "^1.0.1",
     "util": "^0.12.5"
   }

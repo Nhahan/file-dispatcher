@@ -1,7 +1,7 @@
-import * as fs from 'fs';
+import chokidar from 'chokidar';
 import { EventEmitter } from 'events';
 import { promisify } from 'util';
-import * as path from 'path';
+import * as fs from 'fs';
 
 export enum FdEventType {
   Success = 'FdEventType.Success',
@@ -14,39 +14,47 @@ export enum FdMode {
 }
 
 export class FileDispatcher extends EventEmitter {
+  private watcher: chokidar.FSWatcher;
+
   constructor(
-    private readonly directory: string,
-    private readonly executionMode: FdMode,
-    private pattern?: RegExp
+      private readonly directory: string,
+      private readonly executionMode: FdMode,
+      private pattern?: RegExp
   ) {
     super();
-  }
-
-  start(): void {
-    if (this._watcher) {
-      console.log("[FileDispatcher] Already started.")
-      return;
-    }
-
-    this._watcher = fs.watch(this.directory, { encoding: 'utf8' }, (eventType, filename) => {
-      if (eventType === 'rename' && filename && (!this.pattern || filename.match(this.pattern))) {
-        const filePath = path.join(this.directory, filename);
-
-        this.executionMode === FdMode.Async
-          ? this.dispatchFileAsync(filePath)
-          : this.dispatchFileSync(filePath);
-      }
+    this.watcher = chokidar.watch(directory, {
+      ignored: /(^|[/\\])\../, // 숨겨진 파일 및 폴더 무시
+      persistent: true,
     });
   }
 
+  start(): void {
+    if (this.watcher) {
+      console.log('[FileDispatcher] Already started.');
+      return;
+    }
+
+    this.watcher
+        .on('add', (filePath) => this.processFile(filePath))
+        .on('change', (filePath) => this.processFile(filePath));
+  }
+
   stop(): void {
-    if (this._watcher) {
-      this._watcher.close();
-      this._watcher = undefined;
+    if (this.watcher) {
+      this.watcher.close();
+      this.watcher = undefined;
     }
   }
 
-  private _watcher?: fs.FSWatcher;
+  private async processFile(filePath: string): Promise<void> {
+    if (!this.pattern || filePath.match(this.pattern)) {
+      if (this.executionMode === FdMode.Async) {
+        this.dispatchFileAsync(filePath);
+      } else {
+        await this.dispatchFileSync(filePath);
+      }
+    }
+  }
 
   private async dispatchFileAsync(filePath: string): Promise<void> {
     try {
@@ -57,9 +65,9 @@ export class FileDispatcher extends EventEmitter {
     }
   }
 
-  private dispatchFileSync(filePath: string): void {
+  private async dispatchFileSync(filePath: string): Promise<void> {
     try {
-      const fileContent = fs.readFileSync(filePath, 'utf8');
+      const fileContent = await promisify(fs.readFile)(filePath, 'utf8');
       this.emit(FdEventType.Success, filePath, fileContent);
     } catch (error) {
       this.emit(FdEventType.Fail, error);
