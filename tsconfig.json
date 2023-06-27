@@ -14,5 +14,5 @@
     "esm": true
   },
   "exclude": ["node_modules", "dist"],
-  "include": ["src", "test"]
+  "include": ["src"]
 }
