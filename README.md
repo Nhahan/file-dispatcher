@@ -82,4 +82,7 @@ This library is licensed under the MIT License.
 ---
 
 For more information and detailed API documentation, please visit the [GitHub repository](https://github.com/Nhahan/file-dispatcher).
+
 If you encounter any issues or have questions, please feel free to [submit an issue](https://github.com/Nhahan/file-dispatcher/issues).
+
+
