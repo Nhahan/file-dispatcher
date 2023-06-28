@@ -21,6 +21,10 @@ export class FileDispatcher extends EventEmitter {
       private readonly executionMode: FdMode,
       private pattern?: RegExp
   ) {
+    if (!Object.values(FdMode).includes(executionMode)) {
+      console.log('Invalid execution mode:', executionMode);
+      return;
+    }
     super();
   }
 

@@ -75,7 +75,7 @@ dispatcher.on(FdEventType.Fail, (error) => {
 dispatcher.start();
 ```
 
-## Example
+## License
 
 This library is licensed under the MIT License.
 
