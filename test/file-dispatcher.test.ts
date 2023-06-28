@@ -1,10 +1,13 @@
 import { FileDispatcher, FdMode, FdEventType } from '../src';
 
-const dispatcher = new FileDispatcher('./tests', FdMode.Async);
+const fileDispatcherConfig = {
+  path: './test/tmp',
+  mode: FdMode.Async,
+}
+const dispatcher = new FileDispatcher(fileDispatcherConfig);
 
 dispatcher.on(FdEventType.Success, (filePath, fileContent) => {
-  console.log('File dispatched successfully:', filePath);
-  console.log('File content:', fileContent);
+  console.log(filePath, fileContent);
 });
 
 dispatcher.on(FdEventType.Fail, (error) => {
