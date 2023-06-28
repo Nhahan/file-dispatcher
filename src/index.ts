@@ -21,12 +21,7 @@ export class FileDispatcher extends EventEmitter {
       private readonly executionMode: FdMode,
       private pattern?: RegExp
   ) {
-    if (!fs.existsSync(directory)) {
-      console.log('Invalid directory:', directory);
-      return;
-    }
-
-    if (!(executionMode in FdMode)) {
+    if (!Object.values(FdMode).includes(executionMode)) {
       console.log('Invalid execution mode:', executionMode);
       return;
     }
