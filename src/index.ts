@@ -2,7 +2,6 @@ import fs from "fs";
 import * as path from 'path';
 import { EventEmitter } from 'events';
 import { Worker } from 'worker_threads';
-import {FdEventType, FdMode, FileDispatcherOptions, FdInterceptor} from './type';
 
 export class FileDispatcher extends EventEmitter {
   private readonly path: string;
@@ -34,7 +33,7 @@ export class FileDispatcher extends EventEmitter {
   private processFileAsync(filePath: string): Promise<void> {
     return new Promise((resolve, _) => {
       if (this.worker) {
-
+        this.worker.postMessage({ filePath });
       } else {
         fs.readFile(filePath, 'utf8', (error, data) => {
           if (error) {
@@ -59,7 +58,8 @@ export class FileDispatcher extends EventEmitter {
 
   private setupWorker(): void {
     if (!this.worker) {
-      this.worker = new Worker(workerCode, { eval: true }); // don't want to separate worker.js
+      const workerPath = path.join(__dirname, 'worker.js');
+      this.worker = new Worker(workerPath);
       this.worker.on('message', ({ filePath, content }: { filePath: string; content: string }) => {
         this.emitEvent(FdEventType.Success, filePath, content);
       });
@@ -107,17 +107,21 @@ export class FileDispatcher extends EventEmitter {
   }
 }
 
+export enum FdEventType {
+  Success = 'FdEventType.Success',
+  Fail = 'FdEventType.Fail',
+}
 
-const workerCode = `
-const fs = require('fs');
-const { parentPort } = require("worker_threads");
+export enum FdMode {
+  Async = 'FdMode.Async',
+  Sync = 'FdMode.Sync',
+}
 
-parentPort?.on('message', async ({ filePath }) => {
-    try {
-        const content = await fs.promises.readFile(filePath, 'utf8');
-        parentPort?.postMessage({ filePath, content });
-    } catch (error) {
-        console.error('Worker file processing error:', error);
-    }
-});
-`;
+export interface FileDispatcherOptions {
+  path: string;
+  mode: FdMode;
+  interceptor?: FdInterceptor;
+  pattern?: RegExp;
+}
+
+export type FdInterceptor = (filePath: string, content: string) => string;
