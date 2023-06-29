@@ -16,7 +16,7 @@ export class FileDispatcher extends EventEmitter {
     super();
     const { path, mode, interceptor, pattern } = options;
 
-    if (Object.keys(FdMode).indexOf(mode) === -1) {
+    if (!Object.values(FdMode).includes(mode)) {
       console.log('Invalid mode:', mode);
       return;
     }
