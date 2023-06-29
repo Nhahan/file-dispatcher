@@ -4,7 +4,7 @@ module.exports = {
   mode: 'production',
   entry: {
     index: './src/index.ts',
-    worker: './src/worker.js', // worker.js 파일 추가
+    worker: './src/worker.js',
   },
   output: {
     path: path.resolve(__dirname, 'dist'),
