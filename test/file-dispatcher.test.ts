@@ -1,7 +1,8 @@
-import { FileDispatcher, FdMode, FdEventType } from '../src';
+import { FileDispatcher } from '../src';
+import {FdEventType, FdMode} from '../src/type';
 
 const fileDispatcherConfig = {
-  path: './test/tmp',
+  path: './test',
   mode: FdMode.Async,
 }
 const dispatcher = new FileDispatcher(fileDispatcherConfig);

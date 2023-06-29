@@ -1,4 +1,5 @@
-import { FdEventType, FdMode, FileDispatcher, InterceptorFunction } from '../src';
+import {FileDispatcher} from '../src';
+import {FdEventType, FdInterceptor, FdMode} from '../src/type';
 
 describe('FileDispatcher', () => {
     const path = './path/directory';
@@ -12,7 +13,7 @@ describe('FileDispatcher', () => {
 
     describe('emitEvent', () => {
         it('should emit event with modified content when interceptor modifies the content', (done) => {
-            const interceptor: InterceptorFunction = (filePath: string, content: string) => {
+            const interceptor: FdInterceptor = (filePath: string, content: string) => {
                 if (filePath.includes('path')) {
                     return modifiedContent;
                 }
