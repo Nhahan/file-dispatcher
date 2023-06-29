@@ -2,10 +2,13 @@ const path = require('path');
 
 module.exports = {
   mode: 'production',
-  entry: './src/index.ts',
+  entry: {
+    index: './src/index.ts',
+    worker: './src/worker.js', // worker.js 파일 추가
+  },
   output: {
     path: path.resolve(__dirname, 'dist'),
-    filename: 'index.js',
+    filename: '[name].js',
     clean: true,
     library: {
       name: 'FileDispatcher',
