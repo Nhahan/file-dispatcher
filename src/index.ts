@@ -4,8 +4,8 @@ import { EventEmitter } from 'events';
 import { Worker } from 'worker_threads';
 
 export class FileDispatcher extends EventEmitter {
-  private readonly path: string;
-  private readonly mode: FdMode;
+  private readonly path: string = '';
+  private readonly mode: FdMode = FdMode.Async;
   private readonly interceptor?: FdInterceptor;
   private readonly pattern?: RegExp;
   private workers: AvailableWorker[] = [];
@@ -16,10 +16,11 @@ export class FileDispatcher extends EventEmitter {
     super();
     const { path, mode, interceptor, pattern } = options;
 
-    if (!Object.values(FdMode).includes(mode)) {
+    if (Object.keys(FdMode).indexOf(mode) === -1) {
       console.log('Invalid mode:', mode);
       return;
     }
+
     this.path = path;
     this.mode = mode;
     this.interceptor = interceptor;
