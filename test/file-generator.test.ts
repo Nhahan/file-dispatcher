@@ -1,14 +1,17 @@
 import fs from 'fs';
 
-const directory = './test/tmp';
+const directory = './test';
 const fileCount = 500;
 
 describe('File Creation Test', () => {
     beforeAll(() => {
         createTestFiles(directory, fileCount);
     });
+
     afterAll(() => {
-        deleteTestFiles(directory, fileCount);
+        setTimeout(() => {
+            deleteTestFiles(directory, fileCount);
+        }, 2000);
     });
 
     test(`Create ${fileCount} random txt files`, () => {

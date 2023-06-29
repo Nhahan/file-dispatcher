@@ -26,7 +26,7 @@ import { FileDispatcher, FdMode, FdEventType } from 'file-dispatcher';
 // Create a FileDispatcher instance
 const dispatcher = new FileDispatcher({
   path: '/path/to/directory',
-  mode: FdMode.Async,
+  mode: FdMode.Async, // FdMode.Sync is also available
   interceptor: customInterceptor, // Optional
   pattern: /\.txt$/, // Optional
 });
@@ -63,8 +63,8 @@ function customInterceptor(filePath: string, content: string): string {
 
 ### FdMode
 
-- `FdMode.Async`: Execution mode set to asynchronous. Use this mode for asynchronous file processing.
-- `FdMode.Sync`: Execution mode set to synchronous. Use this mode for synchronous file processing.
+- `FdMode.Async`: Enables parallel processing for faster execution speed, but does not guarantee the order of file processing.
+- `FdMode.Sync`: Ensures the order of file processing but may have slower execution speed compared to the asynchronous mode.
 
 ---
 
