@@ -1,5 +1,4 @@
-import { FileDispatcher } from '../src';
-import {FdEventType, FdMode} from '../src/type';
+import {FdEventType, FdMode, FileDispatcher} from '../src';
 
 const fileDispatcherConfig = {
   path: './test',

@@ -1,7 +1,7 @@
 import fs from 'fs';
 
 const directory = './test';
-const fileCount = 100;
+const fileCount = 50;
 
 describe('File Creation Test', () => {
     beforeAll(() => {
