@@ -4,7 +4,7 @@ import { EventEmitter } from 'events';
 import { Worker } from 'worker_threads';
 
 export class FileDispatcher extends EventEmitter {
-  private readonly path: string = '';
+  private readonly path: string = __dirname;
   private readonly mode: FdMode = FdMode.Async;
   private readonly interceptor?: FdInterceptor;
   private readonly pattern?: RegExp;
@@ -21,8 +21,8 @@ export class FileDispatcher extends EventEmitter {
       return;
     }
 
-    this.path = path;
-    this.mode = mode;
+    this.path = path || __dirname;
+    this.mode = mode || FdMode.Async;
     this.interceptor = interceptor;
     this.pattern = pattern;
   }
@@ -35,7 +35,7 @@ export class FileDispatcher extends EventEmitter {
     const worker = this.getAvailableWorker();
     if (worker) {
       worker.isAvailable = false;
-      worker.postMessage(task);
+      worker.postMessage({task, interceptor: this.interceptor});
     } else {
       this.taskQueue.push(task);
     }
@@ -58,7 +58,6 @@ export class FileDispatcher extends EventEmitter {
       worker.isAvailable = true;
       worker.on('message', ({ filePath, content }: { filePath: string; content: string }) => {
         worker.isAvailable = true;
-        if (this.interceptor) content = this.interceptor(filePath, content);
         this.emit(FdEventType.Success, filePath, content);
         this.processPendingTasks();
       });

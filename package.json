@@ -1,6 +1,6 @@
 {
   "name": "file-dispatcher",
-  "version": "1.1.9",
+  "version": "2.0.0",
   "description": "File Dispatcher is a high-performing Node.js library for file event monitoring and dispatching. It efficiently handles file creation or renaming events, providing real-time responses in both synchronous and asynchronous modes. Compact yet powerful, it's ideal for event-driven file system interactions.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
