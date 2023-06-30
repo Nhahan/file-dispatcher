@@ -18,6 +18,10 @@ File Dispatcher is a lightweight and high-performance Node.js library for file e
 npm install file-dispatcher
 ```
 
+***<span style="color: Orange;">Note</span>**: Versions older than <span style="color: red;">2.0.0</span> are <u>not</u> recommended for use.*
+
+<br>
+
 ## Usage
 
 ```ts
@@ -25,8 +29,8 @@ import { FileDispatcher, FdMode, FdEventType } from 'file-dispatcher';
 
 // Create a FileDispatcher instance
 const dispatcher = new FileDispatcher({
-  path: '/path/to/directory',
-  mode: FdMode.Async, // FdMode.Sync is also available
+  path: '/path/to/directory', // Optional
+  mode: FdMode.Async, // Optional
   interceptor: customInterceptor, // Optional
   pattern: /\.txt$/, // Optional
 });
@@ -51,8 +55,9 @@ function customInterceptor(filePath: string, content: string): string {
 
 ### FileDispatcherOptions
 
-- `path`: The directory path to monitor for file events.
-- `mode`: The execution mode for file processing. Use `FdMode.Async` for asynchronous mode or `FdMode.Sync` for synchronous mode.
+
+- `path`: The directory path to monitor for file events. Leave it empty to monitor the current code file directory.
+- `mode`: Use `FdMode.Async` for asynchronous mode or `FdMode.Sync` for synchronous mode. The default mode is `FdMode.Async`.
 - `interceptor` (optional): A custom interceptor function that can modify the file content before dispatching. It takes the file path and content as input and returns the modified content.
 - `pattern` (optional): A regular expression pattern to filter specific file types. Only files matching this pattern will be dispatched. Leave it empty to include all files.
 
@@ -66,7 +71,8 @@ function customInterceptor(filePath: string, content: string): string {
 - `FdMode.Async`: Enables parallel processing for faster execution speed, but does not guarantee the order of file processing.
 - `FdMode.Sync`: Ensures the order of file processing but may have slower execution speed compared to the asynchronous mode.
 
----
+<br>
+
 
 ## License
 
