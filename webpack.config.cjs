@@ -4,7 +4,6 @@ module.exports = {
   mode: 'production',
   entry: {
     index: './src/index.ts',
-    worker: './src/worker.js',
   },
   output: {
     path: path.resolve(__dirname, 'dist'),
@@ -17,7 +16,7 @@ module.exports = {
     globalObject: 'this',
   },
   resolve: {
-    extensions: ['.ts', '.js'],
+    extensions: ['.ts', '.js', '.node']
   },
   module: {
     rules: [

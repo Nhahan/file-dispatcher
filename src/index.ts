@@ -23,7 +23,7 @@ export class FileDispatcher extends EventEmitter {
 
     this.path = path || __dirname;
     this.mode = mode || FdMode.Async;
-    this.interceptor = interceptor;
+    this.interceptor = interceptor || ((_, content) => content);
     this.pattern = pattern;
   }
 
@@ -35,37 +35,39 @@ export class FileDispatcher extends EventEmitter {
     const worker = this.getAvailableWorker();
     if (worker) {
       worker.isAvailable = false;
-      worker.postMessage({task, interceptor: this.interceptor});
+      worker.postMessage(task.filePath);
     } else {
       this.taskQueue.push(task);
     }
   }
 
-  private processPendingTasks(): void {
-    while (this.taskQueue.length > 0 && this.getAvailableWorker()) {
-      const task = this.taskQueue.shift() as Task;
-      this.processFile(task).catch((error) => {
-        console.error('File processing error:', error);
-      });
-    }
-  }
-
   private setupWorkers(): void {
-    const numWorkers = this.mode === FdMode.Async ? 2 : 1;
+    const workerCount = this.mode === FdMode.Async ? 2 : 1;
     const workerPath = path.join(__dirname, 'worker.js');
-    for (let i = 0; i < numWorkers; i++) {
-      const worker = new Worker(workerPath) as AvailableWorker;
+
+    for (let i = 0; i < workerCount; i++) {
+      const worker = new Worker(workerPath, { workerData: { i } }) as AvailableWorker;
       worker.isAvailable = true;
+
       worker.on('message', ({ filePath, content }: { filePath: string; content: string }) => {
         worker.isAvailable = true;
+        content = this.interceptor!(filePath, content);
         this.emit(FdEventType.Success, filePath, content);
-        this.processPendingTasks();
+        const nextTask = this.taskQueue.shift();
+        if (nextTask) {
+          this.processFile(nextTask).catch(console.error);
+        }
       });
+
       worker.on('error', (error) => {
         worker.isAvailable = true;
         console.error('Worker error:', error);
-        this.processPendingTasks();
+        const nextTask = this.taskQueue.shift();
+        if (nextTask) {
+          this.processFile(nextTask).catch(console.error);
+        }
       });
+
       this.workers.push(worker);
     }
   }
@@ -83,14 +85,14 @@ export class FileDispatcher extends EventEmitter {
       return;
     }
     this.setupWorkers();
-    this.watcher = fs.watch(this.path, { recursive: true, persistent: true }, (eventType, filename) => {
-      if (eventType === 'rename' && filename && (!this.pattern || filename.toString().match(this.pattern))) {
-        const filePath = path.join(this.path, filename.toString());
-        if (!fs.existsSync(filePath)) return;
-        this.processFile({ filePath }).catch((error) => {
-          console.error('File processing error:', error);
-        });
-      }
+    this.watcher = fs.watch(this.path, { persistent: true }, (_, filename) => {
+      if (!filename || (this.pattern && !filename.toString().match(this.pattern))) return;
+
+      const filePath = path.join(this.path, filename.toString());
+      const task: Task = { filePath };
+      this.processFile(task).catch((error) => {
+        console.error('File processing error:', error);
+      });
     });
   }
 

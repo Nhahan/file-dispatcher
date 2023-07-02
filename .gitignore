@@ -4,7 +4,7 @@
 # Build output
 /dist
 /build
-index.js
+/native/build
 
 # Environment variables
 .env
