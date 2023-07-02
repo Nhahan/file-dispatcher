@@ -23,7 +23,7 @@ export class FileDispatcher extends EventEmitter {
 
     this.path = path || __dirname;
     this.mode = mode || FdMode.Async;
-    this.interceptor = interceptor;
+    this.interceptor = interceptor || ((_, content) => content);
     this.pattern = pattern;
   }
 
@@ -55,6 +55,7 @@ export class FileDispatcher extends EventEmitter {
 
       worker.on('message', ({ filePath, content }: { filePath: string; content: string }) => {
         worker.isAvailable = true;
+        content = this.interceptor!(filePath, content);
         this.emit(FdEventType.Success, filePath, content);
         const nextTask = this.taskQueue.shift();
         if (nextTask) {
