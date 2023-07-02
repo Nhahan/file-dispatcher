@@ -1,21 +1,21 @@
 import fs from 'fs';
 
-const directory = './test';
+const filePath = './test';
 const fileCount = 500;
 
 describe('File Creation Test', () => {
     beforeAll(() => {
-        createTestFiles(directory, fileCount);
+        createTestFiles(filePath, fileCount);
     });
 
     afterAll(() => {
         setTimeout(() => {
-            deleteTestFiles(directory, fileCount);
+            deleteTestFiles(filePath, fileCount);
         }, 2000);
     });
 
     test(`Create ${fileCount} random txt files`, () => {
-        expect(fs.readdirSync(directory).filter(file => file.endsWith('.txt'))).toHaveLength(fileCount);
+        expect(fs.readdirSync(filePath).filter(file => file.endsWith('.txt'))).toHaveLength(fileCount);
     });
 });
 

@@ -3,6 +3,10 @@ import {FdEventType, FdMode, FileDispatcher} from '../src';
 const fileDispatcherConfig = {
   path: './test',
   mode: FdMode.Async,
+  interceptor: function customInterceptor(filePath: string, content: string): string {
+    // Modify the file content here (example: convert to uppercase)
+    return content.toUpperCase();
+  }
 }
 const dispatcher = new FileDispatcher(fileDispatcherConfig);
 
