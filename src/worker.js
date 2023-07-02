@@ -1,12 +1,13 @@
-const fs = require('fs');
-const {parentPort} = require("worker_threads");
+const { parentPort, workerData } = require("worker_threads");
 
-parentPort?.on('message', async ({ task, interceptor }) => {
+parentPort?.on('message', async (filePath) => {
   try {
-    let content = await fs.promises.readFile(task.filePath, 'utf8');
-    if (interceptor) content = interceptor(task.filePath, content);
-    parentPort?.postMessage({ filePath: task.filePath, content });
+    const filemodPath = workerData.filemodPath;
+    const filemod = require(filemodPath);
+
+    const content = filemod.newFileContent(filePath);
+    content && parentPort?.postMessage({ filePath, content });
   } catch (error) {
-    console.error('Worker file processing error:', error);
+    console.error('Worker processing error:', error);
   }
 });
