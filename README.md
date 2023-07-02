@@ -18,7 +18,7 @@ The File Dispatcher is a lightweight and high-performance Node.js library that s
 npm install file-dispatcher
 ```
 
-***<span style="color: Orange;">Note</span>**: Versions older than <span style="color: red;">2.0.0</span> are <u>not</u> recommended for use.*
+***<span style="color: Orange;">Note</span>**: Versions lower than <span style="color: red;">2.0.0</span> are <u>not</u> recommended*
 
 <br>
 
