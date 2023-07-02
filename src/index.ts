@@ -44,13 +44,9 @@ export class FileDispatcher extends EventEmitter {
   private setupWorkers(): void {
     const workerCount = this.mode === FdMode.Async ? 2 : 1;
     const workerPath = path.join(__dirname, 'worker.js');
-    const filemodSyncPath = path.resolve(__dirname, 'filemod-sync.node');
-    const filemodAsyncPath = path.resolve(__dirname, 'filemod-async.node');
 
     for (let i = 0; i < workerCount; i++) {
-      const filemodPath = this.mode === FdMode.Async ? (i === 0 ? filemodSyncPath : filemodAsyncPath) : filemodSyncPath;
-
-      const worker = new Worker(workerPath, { workerData: { filemodPath } }) as AvailableWorker;
+      const worker = new Worker(workerPath, { workerData: { i } }) as AvailableWorker;
       worker.isAvailable = true;
 
       worker.on('message', ({ filePath, content }: { filePath: string; content: string }) => {
