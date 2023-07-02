@@ -1,8 +1,12 @@
 const { parentPort, workerData } = require("worker_threads");
+const path = require("path");
 
 parentPort?.on('message', async (filePath) => {
   try {
-    const filemodPath = workerData.filemodPath;
+    const filemodPath = workerData.i ?
+        path.resolve(__dirname, 'filemod-sync.node') :
+        path.resolve(__dirname, 'filemod-async.node');
+
     const filemod = require(filemodPath);
 
     const content = filemod.newFileContent(filePath);
