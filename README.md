@@ -30,7 +30,7 @@ The fs module treats file creation, modification, and deletion as a single event
 npm install file-dispatcher
 ```
 
-***<span style="color: Orange;">Note</span>**: Versions lower than <span style="color: red;">2.0.0</span> are <u>not</u> recommended*
+***<span style="color: Orange;">Note</span>**: Versions lower than <span style="color: red;">3.0.0</span> are <u>not</u> recommended*
 
 <br>
 
