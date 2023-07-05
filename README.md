@@ -6,14 +6,12 @@ The File Dispatcher is a lightweight and high-performance Node.js library design
 
 ### How It Works
 
-How It Works:
-
 The File Dispatcher tackles the limitation of the native fs module in Node.js, which fails to promptly read files upon their creation. This library resolves this issue through the following approach:
 
 - Main Thread: The main thread scans file paths and stores them in a queue, without reading their contents.
 - Worker Threads: Worker threads retrieve file paths from the queue and read the corresponding file contents.
-This method allows the library to efficiently handle a large volume of data. In C++ code, the content is read immediately upon receiving the path, thereby making the probability of encountering concurrency issues extremely low. Therefore, no lock processing, such as mutex, has been applied.
 
+This method allows the library to efficiently handle a large volume of data. In C++ code, the content is read immediately upon receiving the path, thereby making the probability of encountering concurrency issues extremely low. Therefore, no lock processing, such as mutex, has been applied.  
 The fs module treats file creation, modification, and deletion as a single event called "rename." To address this, a C++ native addon is used to detect file creations.
 
 ---
