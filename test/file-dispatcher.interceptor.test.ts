@@ -1,5 +1,4 @@
-import fs from 'fs';
-import {FileDispatcher, FdEventType, FdInterceptor} from '../src';
+import {FdEventType, FdInterceptor} from '../src';
 
 interface TaskWithContent {
     filePath: string;
@@ -43,13 +42,10 @@ class FakeFileDispatcher {
     public processFile(task: TaskWithContent): Promise<void> {
         return new Promise<void>((resolve) => {
             this.processedStringCount++;
-
-            // 인터셉터 적용
             if (this.interceptor) {
                 task.content = this.interceptor(task.filePath, task.content);
             }
 
-            // 처리 완료 이벤트 발행
             this.emit(FdEventType.Success, task.filePath, task.content);
 
             resolve();

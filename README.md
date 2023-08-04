@@ -1,6 +1,21 @@
 # File Dispatcher
 
-The File Dispatcher is a lightweight and high-performance Node.js library that specializes in monitoring and dispatching file creation events. It offers real-time responses and excels at handling file system interactions without relying on external libraries. With support for both synchronous and asynchronous modes, it efficiently adapts to event-driven workflows. It robustly handles concurrency issues, making it a reliable solution. Moreover, it is compatible with Linux, macOS, and Windows, ensuring seamless operation across different platforms.
+The File Dispatcher is a lightweight and high-performance Node.js library designed to monitor and dispatch file creation events. It provides real-time responses and effectively handles file system interactions without external dependencies. With support for both synchronous and asynchronous modes. It ensures reliable performance. Additionally, it is compatible with Linux, macOS, and Windows, offering seamless operation across multiple platforms.
+
+---
+
+### How It Works
+
+The built-in fs module in Node.js had two issues, which have been addressed as follows:
+
+1. The problem of not being able to read all files efficiently in situations of rapid file creation:
+  - Main Thread: The main thread scans file paths and stores them in a queue.
+  - Worker Threads: Worker threads retrieve file paths from the queue and read the corresponding file contents.
+
+2. Treating file creations, modifications, and deletions as a single "rename" event, resulting in the inability to detect file creations accurately:
+  - C++ code only reads file creations.
+
+The native addon effectively resolves this by reading the content immediately upon receiving the path, thereby making the probability of encountering concurrency issues extremely low. Therefore, no lock processing, such as mutex, has been applied.
 
 ---
 
@@ -18,7 +33,7 @@ The File Dispatcher is a lightweight and high-performance Node.js library that s
 npm install file-dispatcher
 ```
 
-***<span style="color: Orange;">Note</span>**: Versions lower than <span style="color: red;">2.0.0</span> are <u>not</u> recommended*
+***<span style="color: Orange;">Note</span>**: Versions lower than <span style="color: red;">3.0.0</span> are <u>not</u> recommended*
 
 <br>
 
