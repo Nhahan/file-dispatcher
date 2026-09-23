@@ -183,15 +183,17 @@ describe('dispatch', () => {
   test('moves files without overwriting files already in the target', async () => {
     const done = path.join(outside, 'done');
     fs.mkdirSync(done);
-    fs.writeFileSync(path.join(done, 'report.json'), 'older');
+    fs.writeFileSync(path.join(done, 'report.json'), 'oldest');
+    fs.writeFileSync(path.join(done, 'report-1.json'), 'older');
     const { processed } = start(() => {}, { done: { moveTo: done } });
 
     write(dir, 'report.json', 'newer');
     await waitFor(() => processed.length === 1);
 
-    assert.equal(processed[0]?.movedTo, path.join(done, 'report-1.json'));
-    assert.equal(fs.readFileSync(path.join(done, 'report.json'), 'utf8'), 'older');
-    assert.equal(fs.readFileSync(path.join(done, 'report-1.json'), 'utf8'), 'newer');
+    assert.equal(processed[0]?.movedTo, path.join(done, 'report-2.json'));
+    assert.equal(fs.readFileSync(path.join(done, 'report.json'), 'utf8'), 'oldest');
+    assert.equal(fs.readFileSync(path.join(done, 'report-1.json'), 'utf8'), 'older');
+    assert.equal(fs.readFileSync(path.join(done, 'report-2.json'), 'utf8'), 'newer');
   });
 
   test('treats a file the handler already removed as handled', async () => {
@@ -210,23 +212,118 @@ describe('dispatch', () => {
     const { processed, failed } = start(
       () => {
         calls += 1;
-        // Make the move fail: the target directory path is now a file.
+        // Make the first move fail: the target directory path is a file for a moment.
         fs.rmSync(done, { recursive: true, force: true });
         fs.writeFileSync(done, 'blocker');
+        setTimeout(() => fs.rmSync(done, { force: true }), 150);
       },
       { done: { moveTo: done } },
     );
 
     write(dir, 'a.txt');
-    await waitFor(() => failed.length >= 1);
-    fs.rmSync(done, { force: true });
+    await waitFor(() => processed.length === 1);
+
+    assert.equal(calls, 1);
+    assert.equal(failed.length, 0);
+    assert.deepEqual(fs.readdirSync(done), ['a.txt']);
+  });
+
+  test('gives up on an action that keeps failing and moves on', async () => {
+    const failedDir = path.join(outside, 'failed');
+    const { processed, failed } = start(
+      (file) => {
+        if (file.name === 'bad.txt') {
+          throw new Error('rejected');
+        }
+      },
+      { failed: { moveTo: failedDir } },
+    );
+    fs.rmSync(failedDir, { recursive: true, force: true });
+    fs.writeFileSync(failedDir, 'blocker');
+
+    write(dir, 'bad.txt');
+    await sleep(30);
+    write(dir, 'good.txt');
     await waitFor(() => processed.length === 1, 15_000);
 
+    assert.equal(failed.length, 1);
     const error = failed[0]?.error;
     assert.ok(error instanceof ActionError);
-    assert.equal(error.action, 'done');
-    assert.equal(calls, 1);
-    assert.deepEqual(fs.readdirSync(done), ['a.txt']);
+    assert.equal(error.action, 'failed');
+    assert.equal(error.handlerError?.message, 'rejected');
+    assert.ok(error.cause instanceof Error);
+    assert.ok(fs.existsSync(path.join(dir, 'bad.txt')));
+  });
+
+  test('leaves a file that replaced the handled one alone and handles it next', async () => {
+    let release: () => void = () => {};
+    const contents: string[] = [];
+    const { processed } = start(
+      async (file) => {
+        const content = await file.text();
+        contents.push(content);
+        if (content === 'v1') {
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+      },
+      { done: 'delete', filter: /\.json$/ },
+    );
+
+    write(dir, 'job.json', 'v1');
+    await waitFor(() => contents.length === 1);
+    write(dir, 'job.tmp', 'v2');
+    fs.renameSync(path.join(dir, 'job.tmp'), path.join(dir, 'job.json'));
+    release();
+    await waitFor(() => processed.length === 2);
+
+    assert.deepEqual(contents, ['v1', 'v2']);
+    assert.deepEqual(fs.readdirSync(dir), []);
+  });
+
+  test('moves concurrently into one directory without overwriting', async () => {
+    const second = tempDir();
+    const target = path.join(outside, 'shared');
+    try {
+      const a = start(() => {}, { concurrency: 4, done: { moveTo: target } });
+      const b = dispatch(second, () => {}, { concurrency: 4, done: { moveTo: target } });
+      dispatchers.push(b);
+      let processedB = 0;
+      b.on('processed', () => {
+        processedB += 1;
+      });
+
+      for (let index = 0; index < 50; index += 1) {
+        write(dir, `f${index}.txt`, `a${index}`);
+        fs.writeFileSync(path.join(second, `f${index}.txt`), `b${index}`);
+      }
+      await waitFor(() => a.processed.length === 50 && processedB === 50, 20_000);
+
+      const contents = fs.readdirSync(target).map((name) => fs.readFileSync(path.join(target, name), 'utf8'));
+      assert.equal(contents.length, 100);
+      assert.equal(new Set(contents).size, 100);
+    } finally {
+      fs.rmSync(second, { recursive: true, force: true });
+    }
+  });
+
+  test('copies across file systems without overwriting', async (t) => {
+    t.mock.method(fs, 'link', (_existing: fs.PathLike, _target: fs.PathLike, callback: fs.NoParamCallback) =>
+      process.nextTick(callback, Object.assign(new Error('EXDEV: cross-device link not permitted'), { code: 'EXDEV' })),
+    );
+    const done = path.join(outside, 'done');
+    fs.mkdirSync(done);
+    fs.writeFileSync(path.join(done, 'a.txt'), 'older');
+    const { processed } = start(() => {}, { done: { moveTo: done } });
+
+    write(dir, 'a.txt', 'newer');
+    await waitFor(() => processed.length === 1);
+
+    assert.equal(processed[0]?.movedTo, path.join(done, 'a-1.txt'));
+    assert.equal(fs.readFileSync(path.join(done, 'a.txt'), 'utf8'), 'older');
+    assert.equal(fs.readFileSync(path.join(done, 'a-1.txt'), 'utf8'), 'newer');
+    assert.equal(fs.existsSync(path.join(dir, 'a.txt')), false);
   });
 
   test('rejects a moveTo that is the watched directory under another path', () => {
@@ -277,6 +374,62 @@ describe('dispatch', () => {
     );
   });
 
+  test('handles a hard link as its own entry, including link-then-unlink writes', async () => {
+    const { files, processed } = collect({ filter: /\.json$/ });
+
+    write(dir, 'one.json');
+    await waitFor(() => processed.length === 1);
+    fs.linkSync(path.join(dir, 'one.json'), path.join(dir, 'two.json'));
+    await waitFor(() => processed.length === 2);
+
+    // "Rename without replace": write a temporary name, link the final name, remove the temporary one.
+    write(dir, 'three-tmp.json', 'three');
+    fs.linkSync(path.join(dir, 'three-tmp.json'), path.join(dir, 'three.json'));
+    fs.unlinkSync(path.join(dir, 'three-tmp.json'));
+    await waitFor(() => files.some((file) => file.name === 'three.json'));
+    await sleep(300);
+
+    assert.deepEqual(files.filter((file) => file.name !== 'three-tmp.json').map((file) => file.name), [
+      'one.json',
+      'two.json',
+      'three.json',
+    ]);
+  });
+
+  test('does not handle another spelling of a handled file as a new file', async (t) => {
+    if (!fs.existsSync(path.join(dir, '..', path.basename(dir).toUpperCase()))) {
+      t.skip('case-sensitive file system');
+      return;
+    }
+    let emit: fs.WatchListener<string> = () => {};
+    const watchFn = fs.watch;
+    t.mock.method(fs, 'watch', (target: fs.PathLike, options: fs.WatchOptions, listener: fs.WatchListener<string>) => {
+      emit = listener;
+      return watchFn(target, options, listener);
+    });
+    const { processed } = collect({ rescanInterval: 50 });
+
+    write(dir, 'a.txt');
+    await waitFor(() => processed.length === 1);
+    emit('rename', 'A.TXT');
+    await sleep(400);
+
+    assert.equal(processed.length, 1);
+  });
+
+  test('finds a handled file replaced under its name even when every watch event is lost', async (t) => {
+    t.mock.method(fs, 'watch', () => Object.assign(new EventEmitter(), { close: () => {} }));
+    const { files, processed } = collect({ filter: /\.txt$/, rescanInterval: 50 });
+
+    write(dir, 'a.txt', 'v1');
+    await waitFor(() => processed.length === 1);
+    write(dir, 'a.tmp', 'v2');
+    fs.renameSync(path.join(dir, 'a.tmp'), path.join(dir, 'a.txt'));
+    await waitFor(() => processed.length === 2);
+
+    assert.deepEqual(files.map((file) => file.content), ['v1', 'v2']);
+  });
+
   test('handles a file created under a name whose earlier event was for a removal', async (t) => {
     // Delivers only synthetic events, like a late event for a file that was just deleted.
     let emit: fs.WatchListener<string> = () => {};
@@ -293,6 +446,80 @@ describe('dispatch', () => {
     await waitFor(() => processed.length === 1);
 
     assert.deepEqual(files.map((file) => file.name), ['ghost.txt']);
+  });
+
+  test('handles a file recreated under the same name where the file system records no birth time', async (t) => {
+    const stat = fs.stat;
+    // Simulates a file system without birth times (ext3, NFS, ...).
+    t.mock.method(fs, 'stat', (file: fs.PathLike, options: any, callback: (...args: any[]) => void) =>
+      stat(file, options, (error: NodeJS.ErrnoException | null, stats: any) => {
+        if (stats && typeof stats.birthtimeNs === 'bigint') {
+          stats.birthtimeNs = 0n;
+        }
+        callback(error, stats);
+      }),
+    );
+    // Without a birth time an inode reused for the new file looks unchanged; only the 'rename' event tells.
+    let emit: fs.WatchListener<string> = () => {};
+    t.mock.method(fs, 'watch', (_target: fs.PathLike, _options: fs.WatchOptions, listener: fs.WatchListener<string>) => {
+      emit = listener;
+      return Object.assign(new EventEmitter(), { close: () => {} });
+    });
+    const { files, processed } = collect({ rescanInterval: 50 });
+
+    write(dir, 'a.txt', 'v1');
+    emit('rename', 'a.txt');
+    await waitFor(() => processed.length === 1);
+    fs.unlinkSync(path.join(dir, 'a.txt'));
+    write(dir, 'a.txt', 'v2');
+    emit('rename', 'a.txt');
+    await waitFor(() => processed.length === 2);
+
+    assert.deepEqual(files.map((file) => file.content), ['v1', 'v2']);
+  });
+
+  test('handles a file created under a name that was a directory', async () => {
+    fs.mkdirSync(path.join(dir, 'job'));
+    const { files, processed } = collect({ rescanInterval: 50 });
+
+    await sleep(200);
+    fs.rmdirSync(path.join(dir, 'job'));
+    write(dir, 'job', 'content');
+    await waitFor(() => processed.length === 1);
+
+    assert.deepEqual(files, [{ name: 'job', content: 'content' }]);
+  });
+
+  test('keeps dispatching after the watcher fails', async (t) => {
+    const watchers: EventEmitter[] = [];
+    t.mock.method(fs, 'watch', () => {
+      const watcher = Object.assign(new EventEmitter(), { close: () => {} });
+      watchers.push(watcher);
+      return watcher;
+    });
+    const { processed, errors } = collect({ rescanInterval: 50 });
+
+    watchers[0]?.emit('error', new Error('watcher failed'));
+    write(dir, 'after.txt');
+    await waitFor(() => processed.length === 1);
+
+    assert.equal(errors[0]?.message, 'watcher failed');
+    await waitFor(() => watchers.length >= 2);
+  });
+
+  test('watches a directory again after it is deleted and created again', async (t) => {
+    if (process.platform !== 'linux') {
+      t.skip('the watched directory cannot be replaced while watched on this platform');
+      return;
+    }
+    const { processed } = collect({ rescanInterval: 60_000 });
+
+    fs.rmSync(dir, { recursive: true });
+    fs.mkdirSync(dir);
+    // The rescan triggered by the deletion notices the new directory and watches it again.
+    await sleep(1000);
+    write(dir, 'after.txt');
+    await waitFor(() => processed.length === 1, 3000);
   });
 
   test('filters names with a pattern or a predicate', async () => {
@@ -556,6 +783,24 @@ describe('dispatch', () => {
 
     write(dir, 'a.txt');
     await waitFor(() => returned, 3000);
+  });
+
+  test('close called from several handlers at once does not deadlock', async () => {
+    let dispatcher: Dispatcher | undefined;
+    let returned = 0;
+    const started = start(
+      async () => {
+        await sleep(50);
+        await dispatcher?.close();
+        returned += 1;
+      },
+      { concurrency: 2 },
+    );
+    dispatcher = started.dispatcher;
+
+    write(dir, 'a.txt');
+    write(dir, 'b.txt');
+    await waitFor(() => returned === 2, 3000);
   });
 
   test('stops when the abort signal fires and removes its listener', async () => {

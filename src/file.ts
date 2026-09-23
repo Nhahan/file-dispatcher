@@ -1,9 +1,9 @@
-import fs from 'node:fs';
+import { createReadStream, readFile, type ReadStream } from 'node:fs';
 import { promisify } from 'node:util';
 
 import type { ReadyFile } from './watcher';
 
-const readFile = promisify(fs.readFile);
+const read = promisify(readFile);
 
 /** A file that was created in the watched directory and has finished being written. Content is read on demand. */
 export interface DispatchedFile {
@@ -20,7 +20,7 @@ export interface DispatchedFile {
   /** Reads the whole file as bytes. */
   buffer(): Promise<Buffer>;
   /** Streams the file, for content too large to hold in memory. */
-  stream(): fs.ReadStream;
+  stream(): ReadStream;
 }
 
 export function createFile(file: ReadyFile): DispatchedFile {
@@ -29,8 +29,8 @@ export function createFile(file: ReadyFile): DispatchedFile {
     name: file.name,
     size: file.size,
     createdAt: new Date(file.createdMs),
-    text: (encoding: BufferEncoding = 'utf8') => readFile(file.path, { encoding }),
-    buffer: () => readFile(file.path),
-    stream: () => fs.createReadStream(file.path),
+    text: (encoding: BufferEncoding = 'utf8') => read(file.path, { encoding }),
+    buffer: () => read(file.path),
+    stream: () => createReadStream(file.path),
   };
 }

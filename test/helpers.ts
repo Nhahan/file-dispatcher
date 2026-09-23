@@ -2,15 +2,17 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 
 export function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'file-dispatcher-'));
 }
 
+// Uses monotonic time, so tests that move the wall clock still time out.
 export async function waitFor(condition: () => boolean, timeoutMs = 10_000): Promise<void> {
-  const started = Date.now();
+  const started = performance.now();
   while (!condition()) {
-    if (Date.now() - started > timeoutMs) {
+    if (performance.now() - started > timeoutMs) {
       throw new Error(`Timed out after ${timeoutMs}ms`);
     }
     await sleep(10);
