@@ -3,30 +3,24 @@
 [![npm](https://img.shields.io/npm/v/file-dispatcher.svg)](https://www.npmjs.com/package/file-dispatcher)
 [![CI](https://img.shields.io/github/actions/workflow/status/Nhahan/file-dispatcher/ci.yml?branch=main)](https://github.com/Nhahan/file-dispatcher/actions/workflows/ci.yml)
 
-Process every file dropped into a directory exactly once, after it has been fully written.
-
-Plain `fs.watch` drops events under heavy traffic and reports files before their content is written. file-dispatcher does neither.
+Process every file dropped into a directory exactly once, after it has been fully written. Plain `fs.watch` misses files under heavy traffic; file-dispatcher does not.
 
 ## Benchmark
 
-Files delivered with complete content, out of 10,000 files of 4 KB written by another process. Median of 3 rounds on GitHub Actions, Node.js 24:
+Files delivered with complete content, out of 10,000 files written by another process (median of 3 runs; file-dispatcher with `concurrency: 16`):
 
 | Handler work per file | | Linux | macOS | Windows |
 | --- | --- | ---: | ---: | ---: |
-| none | `fs.watch` | 9,939 | 10,000 | 6,108 |
+| none | `fs.watch` | 9,896 | 10,000 | 4,981 |
 | | file-dispatcher | **10,000** | **10,000** | **10,000** |
-| 1 ms | `fs.watch` | 8,597 | 10,000 | 2,101 |
+| 1 ms | `fs.watch` | 8,591 | 10,000 | 2,421 |
 | | file-dispatcher | **10,000** | **10,000** | **10,000** |
-
-`fs.watch` reads each file on its `rename` event; file-dispatcher runs with `concurrency: 16`. Run `npm run benchmark` to reproduce.
 
 ## Install
 
 ```bash
 npm install file-dispatcher
 ```
-
-Node.js 20 or later. No native code and no dependencies.
 
 ## Usage
 
@@ -44,18 +38,18 @@ const dispatcher = dispatch('./inbox', async (file) => {
 dispatcher.on('failed', (error, file) => console.error(file.name, error));
 dispatcher.on('error', (error) => console.error(error));
 
-// On shutdown: waits for running handlers.
+// On shutdown:
 await dispatcher.close();
 ```
 
-Handlers run one at a time, oldest file first, and the next file waits for the previous handler. Because `done` removes handled files, anything left in the directory is unhandled, so a restart continues where it stopped.
+Files are handled one at a time, oldest first. With `done` removing handled files, a restart picks up whatever is left.
 
-To only observe files, iterate instead:
+To only observe files:
 
 ```ts
 import { watch } from 'file-dispatcher';
 
-for await (const file of watch('./logs', { filter: /\.log$/ })) {
+for await (const file of watch('./uploads', { filter: /\.csv$/ })) {
   console.log(file.name, file.size);
 }
 ```
@@ -64,44 +58,38 @@ for await (const file of watch('./logs', { filter: /\.log$/ })) {
 
 ### `dispatch(directory, handler, options?)`
 
-Calls `await handler(file, { signal })` for every file created in `directory`. `signal` aborts when the dispatcher closes. Throws if the directory cannot be read.
+Calls `handler(file, { signal })` for each new file and waits for it. `signal` aborts when the dispatcher closes.
 
-| Option | Default | Description |
+| Option | Default | |
 | --- | --- | --- |
-| `filter` | | `RegExp` or `(name) => boolean`. Only matching file names are handled. |
-| `concurrency` | `1` | Handlers running at once. With `1`, files are handled oldest first. |
-| `done` | `'keep'` | After the handler succeeds: `'keep'`, `'delete'`, or `{ moveTo: directory }`. |
-| `failed` | `'keep'` | After the handler throws: `'keep'`, `'delete'`, or `{ moveTo: directory }`. |
-| `existing` | `done !== 'keep'` | Also handle files already in the directory at start. |
-| `stabilityThreshold` | `50` | Milliseconds a file's size and mtime must stay unchanged before it is handled. |
-| `rescanInterval` | `1000` | Minimum milliseconds between rescans that run without watch events. `0` disables them. |
-| `signal` | | `AbortSignal` that closes the dispatcher. |
+| `filter` | | `RegExp` or `(name) => boolean` |
+| `concurrency` | `1` | Handlers running at once |
+| `done` | `'keep'` | After success: `'keep'`, `'delete'`, or `{ moveTo }` |
+| `failed` | `'keep'` | After failure: `'keep'`, `'delete'`, or `{ moveTo }` |
+| `existing` | `done !== 'keep'` | Also handle files present at start |
+| `stabilityThreshold` | `50` | Milliseconds a file must stay unchanged before it is handled |
+| `rescanInterval` | `1000` | Milliseconds between rescans; `0` disables them |
+| `signal` | | `AbortSignal` that closes the dispatcher |
 
-`moveTo` never overwrites: if the target name is taken, the file becomes `name-1.ext`, `name-2.ext`, and so on.
+`{ moveTo }` never overwrites; a taken name gets a `-1`, `-2`, ... suffix.
 
-The dispatcher emits:
+Events:
 
-- `processed (file, movedTo)`: the handler succeeded and `done` was applied. `movedTo` is the new path when `done` moved the file.
-- `failed (error, file, movedTo)`: the handler threw and `failed` was applied. If an action itself fails, `error` is an `ActionError`, and the action is retried without running the handler again.
-- `error (error)`: the directory could not be watched or listed. Dispatching resumes once it can. Like any EventEmitter, an `error` without a listener is thrown.
+- `processed (file, movedTo)`
+- `failed (error, file, movedTo)`: `error` is an `ActionError` when `done` or `failed` still failed after a few retries; the file is left in place.
+- `error (error)`: the directory could not be watched or read. Without an `error` listener, it is thrown.
 
-`close()` stops watching and waits for running handlers. Called from inside a handler, it does not wait for that handler.
+`close()` stops watching and waits for running handlers.
+
+A file is handled again after a restart if the process stopped between its handler and `done`.
 
 ### `watch(directory, options?)`
 
-Returns an async iterable of files, oldest first. The next file is found only after the loop body finishes, and the directory is never modified. Takes `filter`, `existing` (default `false`), `stabilityThreshold`, `rescanInterval`, and `signal`. Breaking out of the loop or calling `close()` stops watching. A directory failure is thrown from the loop once and ends it.
+An async iterable of new files, oldest first. Takes `filter`, `existing` (default `false`), `stabilityThreshold`, `rescanInterval`, and `signal`. Leaving the loop stops watching; a directory error is thrown from the loop.
 
 ### File
 
-`path`, `name`, `size`, and `createdAt`, plus `text(encoding?)`, `buffer()`, and `stream()` to read the content on demand. Read it inside the handler: after `done` or `failed` deletes or moves the file, `path` no longer exists.
-
-## How it works
-
-- Watch events only point at names to check. New files are also found by comparing directory listings, so a dropped event cannot lose a file.
-- Files are identified by device, inode, and birth time, so a file replaced under a name that was already handled is handled again.
-- A file is handled once its size and mtime stop changing for `stabilityThreshold` milliseconds.
-- Oldest first means a newer file waits for older files that were found first, including one whose watch event was dropped. It waits at most a second (or 20 × `stabilityThreshold`) for a file that is still being written.
-- Handling is at least once: if the process stops after a handler finishes but before `done` completes, the file is handled again on the next start.
+`path`, `name`, `size`, `createdAt`, `text(encoding?)`, `buffer()`, and `stream()`.
 
 ## License
 

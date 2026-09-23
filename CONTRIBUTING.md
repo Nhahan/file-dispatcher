@@ -1,25 +1,18 @@
 # Contributing
 
-## Development
-
 ```bash
 npm install
 npm test            # type-check and run the tests
 npm run benchmark   # compare with plain fs.watch
 ```
 
-## Branches
-
-- `main` is the release branch. Every push publishes a `beta` prerelease to npm.
-- `dev` is the integration branch.
-- `ci-verify/<topic>` branches are for GitHub Actions changes. Promote them to `dev` as logical Conventional Commits.
+Open pull requests against `main`.
 
 ## Releasing
 
-Before the first release, add a trusted publisher on npmjs.com (package settings → Trusted publisher → GitHub Actions) for the repository `Nhahan/file-dispatcher` and the workflow `release.yml`.
+1. Update `version` in `package.json` and add a matching `## <version>` section to `CHANGELOG.md` in one commit on `main`.
+2. Tag that commit and push both: `git tag v<version> && git push origin main v<version>`. The tag must point to a commit on `main`.
 
-1. In one commit, set the new version in `package.json` and add a matching `## <version>` section to `CHANGELOG.md`. Tests fail when the section is missing.
-2. Merge it to `main`, then run the `Release` workflow manually with `dry_run` unchecked.
-3. The workflow publishes to npm with provenance through trusted publishing (OIDC) and creates the `v<version>` GitHub release from the CHANGELOG section. If a run fails after publishing, re-run it: a version already on npm is not published again, and the missing release is created.
+The `Release` workflow runs the tests, publishes to npm with provenance, and creates the GitHub release from the CHANGELOG section. A `-` in the version (for example `4.1.0-rc.1`) publishes under the `next` dist-tag. If a run fails after publishing, re-run it. Run the workflow manually for a dry run.
 
-Betas published from `main` use the next patch version once the current version is released, so they never sort below it.
+Publishing uses npm trusted publishing. Before the first release, add a trusted publisher on npmjs.com for the repository `Nhahan/file-dispatcher` and the workflow `release.yml`.
