@@ -1,47 +1,24 @@
 name: Release
 
+# Pushing a v<version> tag publishes that version. Running the workflow manually is a dry run.
 on:
   push:
-    branches:
-      - main
+    tags:
+      - 'v*'
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Run the release without publishing to npm.'
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
 
-# Never cancel a running release: an interrupted publish leaves a half-finished release.
+# One release at a time, never cancelled: an interrupted publish leaves a half-finished release, and
+# parallel releases could race for the latest dist-tag.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  group: release
   cancel-in-progress: false
 
 jobs:
-  guard:
-    name: release-branch-guard
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Allow main, or ci-verify/* for dry runs
-        env:
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
-        run: |
-          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
-            exit 0
-          fi
-          if [ "$DRY_RUN" = "true" ] && [[ "$GITHUB_REF" == refs/heads/ci-verify/* ]]; then
-            exit 0
-          fi
-          echo "Releases run from main; dry runs may also run from ci-verify/*. Current ref: $GITHUB_REF"
-          exit 1
-
   ci:
     name: ci
-    needs: guard
     uses: ./.github/workflows/ci.yml
 
   publish:
@@ -52,8 +29,14 @@ jobs:
     permissions:
       contents: write
       id-token: write
+    env:
+      # Only a pushed tag publishes; running the workflow manually, even on a tag, is a dry run.
+      RELEASE: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-node@v6
         with:
@@ -73,58 +56,47 @@ jobs:
 
       - name: Plan release
         id: plan
-        env:
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
-          if [ "$DRY_RUN" = "true" ]; then
-            kind="dry-run"
-          elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
-            kind="beta"
+          if [ "$RELEASE" = "true" ]; then
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "::error::$GITHUB_REF_NAME does not point to a commit on main."
+              exit 1
+            fi
+            plan="$(node scripts/release.js plan stable "$GITHUB_REF_NAME")"
           else
-            kind="stable"
+            plan="$(node scripts/release.js plan dry-run)"
           fi
-          plan="$(node scripts/release.js plan "$kind")"
           version="$(node -p 'JSON.parse(process.argv[1]).version' "$plan")"
           tag="$(node -p 'JSON.parse(process.argv[1]).tag' "$plan")"
           publish="$(node -p 'JSON.parse(process.argv[1]).publish' "$plan")"
-
-          if [ "$kind" = "beta" ]; then
-            # Re-running an old push must not publish old code under the beta tag.
-            git fetch --quiet --depth=1 origin main
-            if [ "$(git rev-parse FETCH_HEAD)" != "$GITHUB_SHA" ]; then
-              echo "::notice::main has moved past $GITHUB_SHA; skipping the beta."
-              publish="false"
-            fi
-          fi
-          if [ "$kind" = "stable" ]; then
+          if [ "$RELEASE" = "true" ]; then
             node scripts/release.js notes "$version" > "$RUNNER_TEMP/release-notes.md"
             if [ "$publish" = "false" ]; then
               echo "::notice::$version is already on npm; only the GitHub release is created if missing."
             fi
           fi
-
-          echo "kind=$kind" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "publish=$publish" >> "$GITHUB_OUTPUT"
-          echo "Plan: $kind $version with dist-tag $tag, publish=$publish."
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+          echo "Plan: $version with dist-tag $tag, publish=$publish."
 
       - name: Publish to npm
         if: ${{ steps.plan.outputs.publish == 'true' }}
         env:
-          KIND: ${{ steps.plan.outputs.kind }}
           TAG: ${{ steps.plan.outputs.tag }}
           VERSION: ${{ steps.plan.outputs.version }}
         run: |
-          npm version "$VERSION" --no-git-tag-version --allow-same-version
-          if [ "$KIND" = "dry-run" ]; then
-            npm publish --access public --tag "$TAG" --dry-run
-          else
+          if [ "$RELEASE" = "true" ]; then
             npm publish --access public --tag "$TAG" --provenance
+          else
+            npm version "$VERSION" --no-git-tag-version
+            npm publish --access public --tag "$TAG" --dry-run
           fi
 
       - name: Create GitHub release
-        if: ${{ steps.plan.outputs.kind == 'stable' }}
+        if: ${{ env.RELEASE == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.plan.outputs.version }}
@@ -137,4 +109,4 @@ jobs:
           if [[ "$VERSION" == *-* ]]; then
             flags+=(--prerelease)
           fi
-          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --notes-file "$RUNNER_TEMP/release-notes.md" "${flags[@]}"
+          gh release create "v$VERSION" --verify-tag --title "v$VERSION" --notes-file "$RUNNER_TEMP/release-notes.md" "${flags[@]}"

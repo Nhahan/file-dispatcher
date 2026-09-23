@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-      - dev
-      - 'ci-verify/**'
   pull_request:
   workflow_dispatch:
   workflow_call:
@@ -66,3 +64,15 @@ jobs:
           npm install "$tarball"
           node -e "const { dispatch, watch } = require('file-dispatcher'); if (typeof dispatch !== 'function' || typeof watch !== 'function') process.exit(1)"
           node --input-type=module -e "import { dispatch, watch } from 'file-dispatcher'; if (typeof dispatch !== 'function' || typeof watch !== 'function') process.exit(1)"
+
+      - name: Type-check a CommonJS consumer without esModuleInterop
+        working-directory: consumer
+        run: |
+          npm install --no-save typescript@5 @types/node@20
+          printf '%s\n' \
+            "import { dispatch, watch, ActionError } from 'file-dispatcher';" \
+            "const dispatcher = dispatch('.', async (file, { signal }) => { if (!signal.aborted) await file.text(); });" \
+            "dispatcher.on('processed', (file, movedTo) => console.log(file.name, movedTo));" \
+            "dispatcher.on('failed', (error) => console.log(error instanceof ActionError ? error.action : error.message));" \
+            "void watch;" > consumer.ts
+          npx tsc --noEmit --strict --module commonjs --moduleResolution node10 --ignoreDeprecations 5.0 consumer.ts
