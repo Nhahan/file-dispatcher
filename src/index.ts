@@ -1,11 +1,6 @@
-export {
-  FdEventType,
-  FdMode,
-  FileDispatcher,
-} from './file-dispatcher';
-export type {
-  FdContent,
-  FdEncoding,
-  FdInterceptor,
-  FileDispatcherOptions,
-} from './file-dispatcher';
+export { dispatch } from './dispatch';
+export type { Dispatcher, DispatcherEvents, DispatchOptions, FileAction, FileHandler } from './dispatch';
+export type { DispatchedFile } from './file';
+export type { FileFilter, WatchOptions } from './options';
+export { watch } from './watch';
+export type { FileWatcher } from './watch';

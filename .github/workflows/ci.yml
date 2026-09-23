@@ -62,5 +62,5 @@ jobs:
           cd consumer
           npm init -y > /dev/null
           npm install "$tarball"
-          node -e "const { FileDispatcher, FdMode } = require('file-dispatcher'); if (typeof FileDispatcher !== 'function' || !FdMode.Sync) process.exit(1)"
-          node --input-type=module -e "import { FileDispatcher, FdEventType } from 'file-dispatcher'; if (typeof FileDispatcher !== 'function' || !FdEventType.Success) process.exit(1)"
+          node -e "const { dispatch, watch } = require('file-dispatcher'); if (typeof dispatch !== 'function' || typeof watch !== 'function') process.exit(1)"
+          node --input-type=module -e "import { dispatch, watch } from 'file-dispatcher'; if (typeof dispatch !== 'function' || typeof watch !== 'function') process.exit(1)"

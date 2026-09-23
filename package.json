@@ -1,7 +1,7 @@
 {
   "name": "file-dispatcher",
   "version": "4.0.0",
-  "description": "Dispatch files created in a directory without losing any, even when fs.watch drops events under heavy traffic.",
+  "description": "Process every file dropped into a directory exactly once, after it is fully written, even when fs.watch drops events.",
   "type": "commonjs",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -25,12 +25,12 @@
     "fs",
     "watch",
     "watcher",
-    "file",
     "directory",
-    "event",
-    "dispatch",
-    "realtime",
-    "monitoring"
+    "inbox",
+    "spool",
+    "queue",
+    "file-processing",
+    "dispatch"
   ],
   "author": "Nhahan",
   "license": "MIT",
