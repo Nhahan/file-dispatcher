@@ -5,15 +5,18 @@ export type FileFilter = RegExp | ((name: string) => boolean);
 
 export interface WatchOptions {
   /** Only files whose names pass this filter are handled. Default: every file. */
-  filter?: FileFilter;
+  filter?: FileFilter | undefined;
   /** Also handle files that are already in the directory at start. */
-  existing?: boolean;
+  existing?: boolean | undefined;
   /** Milliseconds a file's size and mtime must stay unchanged before it is handled. Default: `50`. */
-  stabilityThreshold?: number;
-  /** Milliseconds between full rescans that run even without watch events. `0` disables them. Default: `1000`. */
-  rescanInterval?: number;
+  stabilityThreshold?: number | undefined;
+  /**
+   * Minimum milliseconds between full rescans that run even without watch events. Very large
+   * directories rescan less often. `0` disables them. Default: `1000`.
+   */
+  rescanInterval?: number | undefined;
   /** Stops watching when aborted. */
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
 }
 
 export interface ResolvedWatchOptions {
@@ -36,6 +39,19 @@ export function resolveWatchOptions(directory: string, options: WatchOptions): R
     rescanInterval: nonNegativeNumber(options.rescanInterval ?? 1000, 'rescanInterval'),
     signal: options.signal,
   };
+}
+
+/** Runs `onAbort` once when `signal` aborts, and returns a function that stops listening. */
+export function onAbort(signal: AbortSignal | undefined, onAbort: () => void): () => void {
+  if (!signal) {
+    return () => {};
+  }
+  if (signal.aborted) {
+    onAbort();
+    return () => {};
+  }
+  signal.addEventListener('abort', onAbort, { once: true });
+  return () => signal.removeEventListener('abort', onAbort);
 }
 
 function toPredicate(filter: FileFilter | undefined): (name: string) => boolean {

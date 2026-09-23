@@ -1,13 +1,14 @@
-import { DispatchedFile } from './file';
-import { resolveWatchOptions, type WatchOptions } from './options';
+import { createFile, type DispatchedFile } from './file';
+import { onAbort, resolveWatchOptions, type WatchOptions } from './options';
 import { DirectoryWatcher, type ReadyFile } from './watcher';
 
 /**
- * Yields every file created in `directory`, in creation order, after it has finished being written.
+ * Yields every file created in `directory`, oldest first, after it has finished being written.
  * The next file is found only after the loop body for the previous one completes, and the directory
  * is never modified. Breaking out of the loop stops watching.
  *
- * Throws if `directory` cannot be read. Directory failures while watching are thrown from the loop.
+ * Throws if `directory` cannot be read. A directory failure while watching is thrown from the loop
+ * once and ends the iteration.
  */
 export function watch(directory: string, options: WatchOptions = {}): FileWatcher {
   return new FileWatcher(directory, options);
@@ -18,6 +19,7 @@ export class FileWatcher implements AsyncIterableIterator<DispatchedFile> {
   readonly directory: string;
 
   private readonly watcher: DirectoryWatcher;
+  private stopListening: () => void = () => {};
   private current: ReadyFile | undefined;
   private wake: (() => void) | undefined;
   private error: Error | undefined;
@@ -38,14 +40,7 @@ export class FileWatcher implements AsyncIterableIterator<DispatchedFile> {
       },
     });
     this.watcher.start();
-
-    if (resolved.signal) {
-      if (resolved.signal.aborted) {
-        void this.close();
-      } else {
-        resolved.signal.addEventListener('abort', () => void this.close(), { once: true });
-      }
-    }
+    this.stopListening = onAbort(resolved.signal, () => void this.close());
   }
 
   next(): Promise<IteratorResult<DispatchedFile, undefined>> {
@@ -69,6 +64,7 @@ export class FileWatcher implements AsyncIterableIterator<DispatchedFile> {
     if (!this.closed) {
       this.closed = true;
       this.watcher.stop();
+      this.stopListening();
       this.notify();
     }
   }
@@ -80,19 +76,19 @@ export class FileWatcher implements AsyncIterableIterator<DispatchedFile> {
     }
 
     for (;;) {
+      if (this.closed) {
+        return { done: true, value: undefined };
+      }
       if (this.error) {
         const error = this.error;
         await this.close();
         throw error;
       }
-      if (this.closed) {
-        return { done: true, value: undefined };
-      }
 
       const ready = this.watcher.take();
       if (ready) {
         this.current = ready;
-        return { done: false, value: new DispatchedFile(ready) };
+        return { done: false, value: createFile(ready) };
       }
 
       await new Promise<void>((resolve) => {

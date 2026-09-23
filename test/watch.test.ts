@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 
 import { watch } from '../src';
@@ -50,13 +51,37 @@ describe('watch', () => {
     assert.equal(first.value?.name, 'existing.txt');
   });
 
+  test('filters file names', async () => {
+    const files = watch(dir, { filter: /\.json$/ });
+    write(dir, 'skip.txt');
+    write(dir, 'keep.json');
+
+    const first = await files.next();
+    await files.close();
+
+    assert.equal(first.value?.name, 'keep.json');
+  });
+
   test('ends a pending iteration when closed or aborted', async () => {
+    const closed = watch(dir);
+    const pendingClose = closed.next();
+    await closed.close();
+    assert.deepEqual(await pendingClose, { done: true, value: undefined });
+
     const controller = new AbortController();
-    const files = watch(dir, { signal: controller.signal });
-
-    const pending = files.next();
+    const aborted = watch(dir, { signal: controller.signal });
+    const pendingAbort = aborted.next();
     controller.abort();
+    assert.deepEqual(await pendingAbort, { done: true, value: undefined });
+  });
 
-    assert.deepEqual(await pending, { done: true, value: undefined });
+  test('throws a directory failure once and then ends', async (t) => {
+    t.mock.method(fsp, 'readdir', async () => {
+      throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    });
+    const files = watch(dir, { rescanInterval: 50 });
+
+    await assert.rejects(files.next(), /EACCES/);
+    assert.deepEqual(await files.next(), { done: true, value: undefined });
   });
 });
