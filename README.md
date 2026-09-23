@@ -3,7 +3,7 @@
 [![npm](https://img.shields.io/npm/v/file-dispatcher.svg)](https://www.npmjs.com/package/file-dispatcher)
 [![CI](https://img.shields.io/github/actions/workflow/status/Nhahan/file-dispatcher/ci.yml?branch=main)](https://github.com/Nhahan/file-dispatcher/actions/workflows/ci.yml)
 
-Dispatches every file created in a directory exactly once, after it has been fully written.
+Process every file dropped into a directory exactly once, after it has been fully written.
 
 Plain `fs.watch` drops events under heavy traffic and reports files before their content is written. file-dispatcher does neither.
 
@@ -11,11 +11,11 @@ Plain `fs.watch` drops events under heavy traffic and reports files before their
 
 Files delivered with complete content, out of 10,000 files of 4 KB written by another process. Median of 3 rounds on GitHub Actions, Node.js 24:
 
-| Listener work per file | | Linux | macOS | Windows |
+| Handler work per file | | Linux | macOS | Windows |
 | --- | --- | ---: | ---: | ---: |
-| none | `fs.watch` | 9,929 | 10,000 | 5,354 |
+| none | `fs.watch` | 9,890 | 10,000 | 5,285 |
 | | file-dispatcher | **10,000** | **10,000** | **10,000** |
-| 1 ms | `fs.watch` | 8,593 | 10,000 | 2,441 |
+| 1 ms | `fs.watch` | 8,592 | 10,000 | 2,473 |
 | | file-dispatcher | **10,000** | **10,000** | **10,000** |
 
 `fs.watch` reads each file on its `rename` event. Run `npm run benchmark` to reproduce.
@@ -31,49 +31,71 @@ Node.js 20 or later. No native code and no dependencies.
 ## Usage
 
 ```ts
-import { FdEventType, FileDispatcher } from 'file-dispatcher';
+import { dispatch } from 'file-dispatcher';
 
-const dispatcher = new FileDispatcher({ path: './inbox', pattern: /\.json$/ });
-
-dispatcher.on(FdEventType.Success, (filePath, content) => {
-  console.log(filePath, content);
+const dispatcher = dispatch('./inbox', async (file) => {
+  await saveOrder(JSON.parse(await file.text()));
+}, {
+  filter: /\.json$/,
+  done: 'delete',
+  failed: { moveTo: './failed' },
 });
-dispatcher.on(FdEventType.Fail, (error, filePath) => {
-  console.error(filePath, error);
-});
 
-dispatcher.start();
-// ...
-await dispatcher.stop();
+dispatcher.on('failed', (error, file) => console.error(file.name, error));
+dispatcher.on('error', (error) => console.error(error));
+
+// On shutdown: waits for running handlers.
+await dispatcher.close();
 ```
 
-## Options
+Handlers run one at a time in creation order, and the next file waits for the previous handler. Because `done` removes handled files, anything left in the directory is unhandled, so a restart continues where it stopped.
+
+To only observe files, iterate instead:
+
+```ts
+import { watch } from 'file-dispatcher';
+
+for await (const file of watch('./logs', { filter: /\.log$/ })) {
+  console.log(file.name, file.size);
+}
+```
+
+## API
+
+### `dispatch(directory, handler, options?)`
+
+Calls `await handler(file)` for every file created in `directory`. Throws if the directory cannot be read.
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `path` | `process.cwd()` | Directory to watch. Subdirectories are not watched. |
-| `mode` | `FdMode.Async` | `FdMode.Async` reads files concurrently. `FdMode.Sync` dispatches one file at a time in creation order. |
-| `pattern` | | Only file names matching this `RegExp` are dispatched. |
-| `encoding` | `'utf8'` | Encoding used to read files. `null` dispatches a `Buffer`. |
-| `interceptor` | | `(filePath, content) => content`, sync or async. Transforms content before it is dispatched. |
-| `concurrency` | `16` | Files read at once in `FdMode.Async`. |
-| `stabilityThreshold` | `50` | Milliseconds a file's size and mtime must stay unchanged before it is read. |
+| `filter` | | `RegExp` or `(name) => boolean`. Only matching file names are handled. |
+| `concurrency` | `1` | Handlers running at once. With `1`, files are handled in creation order. |
+| `done` | `'keep'` | After the handler succeeds: `'keep'`, `'delete'`, or `{ moveTo: directory }`. |
+| `failed` | `'keep'` | After the handler throws: `'keep'`, `'delete'`, or `{ moveTo: directory }`. |
+| `existing` | `done !== 'keep'` | Also handle files already in the directory at start. |
+| `stabilityThreshold` | `50` | Milliseconds a file's size and mtime must stay unchanged before it is handled. |
 | `rescanInterval` | `1000` | Milliseconds between rescans that run without watch events. `0` disables them. |
+| `signal` | | `AbortSignal` that closes the dispatcher. |
 
-Files that already exist when `start()` is called are not dispatched, and neither are modifications or deletions.
+Returns a dispatcher with `close()` and these events:
 
-## Events
+- `processed (file)`: the handler succeeded and `done` was applied.
+- `failed (error, file)`: the handler threw, or `done` or `failed` could not be applied.
+- `error (error)`: the directory could not be watched or listed.
 
-- `FdEventType.Success`: `(filePath, content)`
-- `FdEventType.Fail`: `(error, filePath)` for read and interceptor errors, or `(error)` when the directory cannot be read
+### `watch(directory, options?)`
+
+Returns an async iterable of files in creation order. The next file is found only after the loop body finishes, and the directory is never modified. Takes `filter`, `existing` (default `false`), `stabilityThreshold`, `rescanInterval`, and `signal`. Breaking out of the loop or calling `close()` stops watching.
+
+### File
+
+`path`, `name`, `size`, and `createdAt`, plus `text(encoding?)`, `buffer()`, and `stream()` to read the content on demand.
 
 ## How it works
 
 - Watch events only trigger a rescan. New files are found by comparing directory listings, so a dropped event cannot lose a file.
-- A file is read once its size and mtime stop changing for `stabilityThreshold` milliseconds.
-- In `FdMode.Sync`, a file waits for a rescan that started after it was found, so an older file whose event was dropped still goes first.
-
-Upgrading from 3.x: see the [CHANGELOG](./CHANGELOG.md).
+- A file is handled once its size and mtime stop changing for `stabilityThreshold` milliseconds.
+- In creation order, a file waits for a rescan that started after it was found, so an older file whose event was dropped still goes first.
 
 ## License
 
