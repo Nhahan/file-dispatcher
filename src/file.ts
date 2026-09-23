@@ -7,6 +7,8 @@ const read = promisify(readFile);
 
 /** A file that was created in the watched directory and has finished being written. Content is read on demand. */
 export interface DispatchedFile {
+  /** Stays the same for the same file across restarts; use it to make handlers idempotent. */
+  readonly id: string;
   /** Absolute path where the file was found. */
   readonly path: string;
   /** File name within the watched directory. */
@@ -25,6 +27,7 @@ export interface DispatchedFile {
 
 export function createFile(file: ReadyFile): DispatchedFile {
   return {
+    id: file.id,
     path: file.path,
     name: file.name,
     size: file.size,

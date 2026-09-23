@@ -11,7 +11,12 @@ export interface ReadyFile {
   readonly createdMs: number;
   /** Device, inode, and birth time when the file was handed out. */
   readonly identity: string;
+  /** Inode and birth time (or modification time without one): the same for the same file across restarts. */
+  readonly id: string;
 }
+
+/** Names with this prefix are the library's own temporary names and are never handed out. */
+export const RESERVED_PREFIX = '.file-dispatcher-';
 
 export interface WatcherOptions {
   directory: string;
@@ -34,6 +39,9 @@ interface KnownEntry {
   // Identity of the regular file last seen under this name, used to tell a replacement from a
   // modification. Undefined until one is seen.
   identity: string | undefined;
+  // Its modification time: a file created again within one timestamp tick can reuse the inode and
+  // birth time, but not the modification time of a file that had already settled.
+  mtimeNs: bigint | undefined;
   // Present when watching started; such a name is not new when its identity is first recorded.
   baseline: boolean;
 }
@@ -43,6 +51,7 @@ interface Candidate {
   path: string;
   seq: number;
   identity: string;
+  id: string;
   size: bigint;
   mtimeNs: bigint;
   createdMs: number;
@@ -66,6 +75,9 @@ const MAX_RETRY_MS = 30_000;
 // max(HOLD_MIN_MS, HOLD_THRESHOLDS × stabilityThreshold): a file appended forever must not stall the queue.
 const HOLD_MIN_MS = 1000;
 const HOLD_THRESHOLDS = 20;
+// Handled (and pre-existing) files remembered by identity, modification time, and size, so that
+// another name for the same unchanged file, from a rename or a hard link, is not handed out again.
+const SEEN_LIMIT = 100_000;
 // Handled files checked per rescan for replacements whose watch events were all dropped.
 const VERIFY_BATCH = 256;
 // Bounds concurrent fs.stat calls.
@@ -96,6 +108,7 @@ export class DirectoryWatcher {
   private readonly holdMs: number;
   private watcher: fs.FSWatcher | undefined;
   private watchedIdentity: string | undefined;
+  private watchedName: string | undefined;
   private periodicTimer: NodeJS.Timeout | undefined;
   private scanTimer: NodeJS.Timeout | undefined;
   private settleTimer: NodeJS.Timeout | undefined;
@@ -115,6 +128,7 @@ export class DirectoryWatcher {
   private changedNames = new Map<string, boolean>();
   private verifyQueue: string[] = [];
   private readonly known = new Map<string, KnownEntry>();
+  private readonly seen = new Map<string, string>();
   private readonly candidates = new Map<string, Candidate>();
   // Every candidate waits the same threshold, so due times grow in insertion order and a FIFO suffices.
   private readonly settling = new Queue<Candidate>();
@@ -142,8 +156,11 @@ export class DirectoryWatcher {
     }
 
     for (const entry of entries) {
+      if (entry.name.startsWith(RESERVED_PREFIX)) {
+        continue;
+      }
       // Only files count as already there: a file later created under a directory's name is new.
-      this.known.set(entry.name, { addedAtScan: 0, identity: undefined, baseline: !entry.isDirectory() });
+      this.known.set(entry.name, { addedAtScan: 0, identity: undefined, mtimeNs: undefined, baseline: !entry.isDirectory() });
     }
     const matching = entries.map((entry) => entry.name).filter((name) => this.options.filter(name));
     if (this.options.existing) {
@@ -171,6 +188,7 @@ export class DirectoryWatcher {
     this.ready.clear();
     this.ordered.clear();
     this.pending.clear();
+    this.seen.clear();
     this.verifyQueue = [];
   }
 
@@ -211,6 +229,7 @@ export class DirectoryWatcher {
       size: Number(next.size),
       createdMs: next.createdMs,
       identity: next.identity,
+      id: next.id,
     };
   }
 
@@ -226,6 +245,7 @@ export class DirectoryWatcher {
     }
 
     this.candidates.delete(file.name);
+    this.markSeen(candidate.identity, candidate.mtimeNs, candidate.size);
     if (removed) {
       this.known.delete(file.name);
       if (candidate.recheck) {
@@ -234,12 +254,30 @@ export class DirectoryWatcher {
     } else if (recheck) {
       const entry = this.known.get(file.name);
       if (entry) {
-        entry.identity = file.identity;
+        entry.identity = candidate.identity;
+        entry.mtimeNs = candidate.mtimeNs;
       }
       this.queueName(file.name, true);
     } else if (candidate.recheck) {
       this.queueName(file.name, true);
     }
+  }
+
+  private markSeen(identity: string, mtimeNs: bigint, size: bigint): void {
+    this.seen.delete(identity);
+    this.seen.set(identity, `${mtimeNs}:${size}`);
+    if (this.seen.size > SEEN_LIMIT) {
+      const oldest = this.seen.keys().next().value;
+      if (oldest !== undefined) {
+        this.seen.delete(oldest);
+      }
+    }
+  }
+
+  // The same file under another name keeps its modification time and size; a new file that happens
+  // to reuse an inode and birth time does not.
+  private wasSeen(identity: string, stats: fs.BigIntStats): boolean {
+    return this.seen.get(identity) === `${stats.mtimeNs}:${stats.size}`;
   }
 
   private isPending(candidate: Candidate, now: number): boolean {
@@ -261,6 +299,7 @@ export class DirectoryWatcher {
     try {
       const real = fs.realpathSync.native(this.options.directory);
       this.watchedIdentity = identityOf(fs.statSync(real, { bigint: true }));
+      this.watchedName = path.basename(real);
       watcher = fs.watch(real, { persistent: true }, (event, name) =>
         name ? this.queueName(name.toString(), event === 'rename') : this.requestScan(),
       );
@@ -288,17 +327,27 @@ export class DirectoryWatcher {
     this.watcher?.close();
     this.watcher = undefined;
     this.watchedIdentity = undefined;
+    this.watchedName = undefined;
   }
 
   // Watch events name a file to check; rescans find anything the events missed.
   private queueName(name: string, renamed: boolean): void {
-    if (this.stopped || !this.options.filter(name)) {
+    if (this.stopped) {
+      return;
+    }
+    if (renamed && name === this.watchedName) {
+      // An event under the directory's own name usually means it was deleted or moved, which leaves
+      // the watch handle silent: watch again after a rescan, which finds anything missed meanwhile.
+      this.closeWatcher();
+      this.requestScan();
+    }
+    if (name.startsWith(RESERVED_PREFIX) || !this.options.filter(name)) {
       return;
     }
 
     const entry = this.known.get(name);
     if (!entry) {
-      this.known.set(name, { addedAtScan: this.scansStarted, identity: undefined, baseline: false });
+      this.known.set(name, { addedAtScan: this.scansStarted, identity: undefined, mtimeNs: undefined, baseline: false });
       this.newNames.add(name);
       // Events for names it did not know may be the few that got through; rescan (on a budget) in
       // case others were dropped. This also notices a watched directory that was deleted.
@@ -359,14 +408,19 @@ export class DirectoryWatcher {
         entry.identity === undefined
           ? !entry.baseline
           : entry.identity !== identity ||
-            // Without a birth time, an inode reused for a new file looks unchanged; a 'rename' event
-            // on the name means the entry itself was replaced.
-            (renamed && stats.birthtimeNs === 0n);
+            // A file created again within one timestamp tick can reuse the inode and birth time; a
+            // 'rename' event on the name with a new modification time means the entry was replaced.
+            (renamed && entry.mtimeNs !== undefined && stats.mtimeNs !== entry.mtimeNs);
       if (isNew) {
         entry.addedAtScan = this.scansStarted;
         replaced.push(name);
       } else {
         entry.identity = identity;
+        entry.mtimeNs = stats.mtimeNs;
+        if (entry.baseline) {
+          // A file that was already there counts as seen when another name for it appears later.
+          this.markSeen(identity, stats.mtimeNs, stats.size);
+        }
       }
     });
 
@@ -428,9 +482,12 @@ export class DirectoryWatcher {
       const present = new Set<string>();
       const added: string[] = [];
       for (const entry of entries) {
+        if (entry.name.startsWith(RESERVED_PREFIX)) {
+          continue;
+        }
         present.add(entry.name);
         if (!this.known.has(entry.name)) {
-          this.known.set(entry.name, { addedAtScan: scanId, identity: undefined, baseline: false });
+          this.known.set(entry.name, { addedAtScan: scanId, identity: undefined, mtimeNs: undefined, baseline: false });
           if (!entry.isDirectory() && this.options.filter(entry.name)) {
             added.push(entry.name);
           }
@@ -523,11 +580,17 @@ export class DirectoryWatcher {
 
       const identity = identityOf(stats);
       entry.identity = identity;
+      entry.mtimeNs = stats.mtimeNs;
+      if (this.wasSeen(identity, stats)) {
+        // A rename or hard link of a file that was already handled (or already there): not new.
+        continue;
+      }
       const candidate: Candidate = {
         name,
         path: path.join(this.options.directory, name),
         seq: this.nextSeq++,
         identity,
+        id: fileId(stats),
         size: stats.size,
         mtimeNs: stats.mtimeNs,
         createdMs: Number(stats.birthtimeNs > 0n ? stats.birthtimeNs : stats.mtimeNs) / 1e6,
@@ -640,6 +703,7 @@ export class DirectoryWatcher {
         (identity !== candidate.identity || stats.size !== candidate.size || stats.mtimeNs !== candidate.mtimeNs)
       ) {
         candidate.identity = identity;
+        candidate.id = fileId(stats);
         candidate.size = stats.size;
         candidate.mtimeNs = stats.mtimeNs;
         candidate.due = performance.now() + this.options.stabilityThreshold;
@@ -649,11 +713,13 @@ export class DirectoryWatcher {
       }
 
       candidate.identity = identity;
+      candidate.id = fileId(stats);
       candidate.size = stats.size;
       candidate.state = 'ready';
       const entry = this.known.get(candidate.name);
       if (entry) {
         entry.identity = identity;
+        entry.mtimeNs = stats.mtimeNs;
       }
       (this.options.ordered ? this.ordered : this.ready).push(candidate);
       changed = true;
@@ -695,6 +761,11 @@ export class DirectoryWatcher {
 
 function byCreation(a: Candidate, b: Candidate): number {
   return a.createdMs - b.createdMs || a.name.localeCompare(b.name) || a.seq - b.seq;
+}
+
+/** A key for a file that stays the same across restarts, for handlers that must be idempotent. */
+function fileId(stats: fs.BigIntStats): string {
+  return `${stats.ino}-${stats.birthtimeNs > 0n ? stats.birthtimeNs : `m${stats.mtimeNs}`}`;
 }
 
 /** Identifies a file by device, inode, and birth time. */

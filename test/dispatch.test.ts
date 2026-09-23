@@ -374,26 +374,118 @@ describe('dispatch', () => {
     );
   });
 
-  test('handles a hard link as its own entry, including link-then-unlink writes', async () => {
-    const { files, processed } = collect({ filter: /\.json$/ });
-
-    write(dir, 'one.json');
-    await waitFor(() => processed.length === 1);
-    fs.linkSync(path.join(dir, 'one.json'), path.join(dir, 'two.json'));
-    await waitFor(() => processed.length === 2);
+  test('handles a file written under a temporary name and linked into place', async () => {
+    const { files } = collect({ filter: /\.json$/ });
 
     // "Rename without replace": write a temporary name, link the final name, remove the temporary one.
     write(dir, 'three-tmp.json', 'three');
     fs.linkSync(path.join(dir, 'three-tmp.json'), path.join(dir, 'three.json'));
     fs.unlinkSync(path.join(dir, 'three-tmp.json'));
-    await waitFor(() => files.some((file) => file.name === 'three.json'));
+    await waitFor(() => files.length === 1);
     await sleep(300);
 
-    assert.deepEqual(files.filter((file) => file.name !== 'three-tmp.json').map((file) => file.name), [
-      'one.json',
-      'two.json',
-      'three.json',
-    ]);
+    assert.equal(files.length, 1);
+    assert.equal(files[0]?.content, 'three');
+  });
+
+  test('does not handle a file again when it is renamed or linked under another name', async () => {
+    write(dir, 'before.json');
+    const { files, processed } = collect({ filter: /\.json$/, rescanInterval: 50 });
+
+    write(dir, 'a.json');
+    await waitFor(() => processed.length === 1);
+    fs.renameSync(path.join(dir, 'a.json'), path.join(dir, 'b.json'));
+    fs.linkSync(path.join(dir, 'b.json'), path.join(dir, 'c.json'));
+    // A file that was already there is not new under another name either.
+    fs.renameSync(path.join(dir, 'before.json'), path.join(dir, 'after.json'));
+    await sleep(500);
+
+    assert.deepEqual(files.map((file) => file.name), ['a.json']);
+  });
+
+  test('gives each file an id that stays the same across restarts', async () => {
+    const first = collect({ existing: true });
+    const ids: string[] = [];
+    first.dispatcher.on('processed', (file) => ids.push(file.id));
+    write(dir, 'a.txt');
+    write(dir, 'b.txt');
+    await waitFor(() => ids.length === 2);
+    await first.dispatcher.close();
+
+    const again: string[] = [];
+    const second = collect({ existing: true });
+    second.dispatcher.on('processed', (file) => again.push(`${file.name}:${file.id}`));
+    await waitFor(() => again.length === 2);
+
+    assert.notEqual(ids[0], ids[1]);
+    assert.deepEqual(
+      again.sort(),
+      first.processed.map((entry, index) => `${entry.name}:${ids[index]}`).sort(),
+    );
+  });
+
+  test('handles a file created again under a handled name even if it reuses the inode and birth time', async (t) => {
+    // Simulates a file system that hands the freed inode to the new file within one timestamp tick.
+    const stat = fs.stat;
+    t.mock.method(fs, 'stat', (file: fs.PathLike, options: any, callback: (...args: any[]) => void) =>
+      stat(file, options, (error: NodeJS.ErrnoException | null, stats: any) => {
+        // Every file in the directory, under any name, reports the same inode and birth time.
+        if (stats && typeof stats.ino === 'bigint' && String(file).startsWith(dir + path.sep)) {
+          stats.ino = 42n;
+          stats.birthtimeNs = 1_000_000_000n;
+        }
+        callback(error, stats);
+      }),
+    );
+    const { files, processed } = collect({ done: 'delete', filter: /\.json$/ });
+
+    write(dir, 'job.json', 'v1');
+    await waitFor(() => processed.length === 1);
+    write(dir, 'job.json', 'v2');
+    await waitFor(() => processed.length === 2);
+
+    assert.deepEqual(files.map((file) => file.content), ['v1', 'v2']);
+  });
+
+  test('never deletes a file that took the name just before the delete', async (t) => {
+    const target = path.join(dir, 'job.json');
+    let injected = false;
+    // Replaces the handled file at the last moment before the dispatcher touches its name.
+    const inject = (file: fs.PathLike) => {
+      if (!injected && String(file) === target) {
+        injected = true;
+        fs.writeFileSync(path.join(dir, 'job.tmp'), 'v2');
+        fs.renameSync(path.join(dir, 'job.tmp'), target);
+      }
+    };
+    const rename = fs.rename;
+    const unlink = fs.unlink;
+    t.mock.method(fs, 'rename', (source: fs.PathLike, destination: fs.PathLike, callback: fs.NoParamCallback) => {
+      inject(source);
+      rename(source, destination, callback);
+    });
+    t.mock.method(fs, 'unlink', (file: fs.PathLike, callback: fs.NoParamCallback) => {
+      inject(file);
+      unlink(file, callback);
+    });
+    const { files, processed } = collect({ done: 'delete', filter: /\.json$/ });
+
+    write(dir, 'job.json', 'v1');
+    await waitFor(() => processed.length === 2);
+
+    assert.deepEqual(files.map((file) => file.content), ['v1', 'v2']);
+    assert.deepEqual(fs.readdirSync(dir).filter((name) => !name.endsWith('.tmp')), []);
+  });
+
+  test('ignores its own temporary names', async () => {
+    const { processed } = collect({ rescanInterval: 50 });
+
+    write(dir, '.file-dispatcher-parked');
+    write(dir, 'marker.txt');
+    await waitFor(() => processed.length === 1);
+    await sleep(300);
+
+    assert.equal(processed.length, 1);
   });
 
   test('does not handle another spelling of a handled file as a new file', async (t) => {
@@ -516,10 +608,11 @@ describe('dispatch', () => {
 
     fs.rmSync(dir, { recursive: true });
     fs.mkdirSync(dir);
-    // The rescan triggered by the deletion notices the new directory and watches it again.
+    // The rescan triggered by the deletion notices the new directory and watches it again, long
+    // before the next periodic rescan a minute later.
     await sleep(1000);
     write(dir, 'after.txt');
-    await waitFor(() => processed.length === 1, 3000);
+    await waitFor(() => processed.length === 1);
   });
 
   test('filters names with a pattern or a predicate', async () => {

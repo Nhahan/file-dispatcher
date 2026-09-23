@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,13 +8,14 @@ import { promisify } from 'node:util';
 
 import { createFile, type DispatchedFile } from './file';
 import { onAbort, positiveInteger, resolveWatchOptions, type WatchOptions } from './options';
-import { DirectoryWatcher, statIdentity, toError, type ReadyFile } from './watcher';
+import { DirectoryWatcher, RESERVED_PREFIX, statIdentity, toError, type ReadyFile } from './watcher';
 
 // Looked up on each call rather than bound once, so the file system functions stay replaceable.
 const link = (existing: string, target: string) => promisify(fs.link)(existing, target);
 const unlink = (file: string) => promisify(fs.unlink)(file);
 const copyFile = (source: string, target: string, mode: number) => promisify(fs.copyFile)(source, target, mode);
 const mkdir = (directory: string) => promisify(fs.mkdir)(directory, { recursive: true });
+const rename = (source: string, target: string) => promisify(fs.rename)(source, target);
 
 // A failed done/failed action is retried with backoff; afterwards the file stays where it is.
 const ACTION_ATTEMPTS = 5;
@@ -337,8 +339,7 @@ async function applyAction(action: ResolvedAction, file: ReadyFile): Promise<Act
   }
 
   if (action.type === 'delete') {
-    await unlink(file.path).catch(ignoreMissing);
-    return { type: 'removed' };
+    return (await removeExact(file)) === 'replaced' ? { type: 'replaced' } : { type: 'removed' };
   }
 
   await mkdir(action.directory);
@@ -391,7 +392,8 @@ async function moveWithoutOverwriting(file: ReadyFile, directory: string): Promi
       await unlink(target).catch(ignoreMissing);
       return { type: 'replaced' };
     }
-    await unlink(file.path).catch(ignoreMissing);
+    // The handled file is safely at the target; drop the source name without touching a newer file.
+    await removeExact(file);
     return { type: 'moved', to: target };
   }
 }
@@ -408,21 +410,69 @@ async function copyWithoutOverwriting(file: ReadyFile, target: string): Promise<
     throw error;
   }
 
-  const identity = await statIdentity(file.path);
-  if (identity !== undefined && identity !== file.identity) {
+  let removed: 'removed' | 'replaced' | 'missing';
+  try {
+    removed = await removeExact(file);
+  } catch (error) {
+    // Keep exactly one copy: the retry moves the source again.
+    await unlink(target).catch(() => undefined);
+    throw error;
+  }
+  if (removed === 'replaced') {
+    // Another file took the name, so the copy may not be of the handled file; the new file is kept.
     await unlink(target).catch(ignoreMissing);
     return { type: 'replaced' };
   }
-  try {
-    await unlink(file.path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      // Keep exactly one copy: the retry moves the source again.
-      await unlink(target).catch(() => undefined);
-      throw error;
-    }
-  }
   return { type: 'moved', to: target };
+}
+
+/**
+ * Removes the handled file's name without ever removing a different file that took the name: the
+ * name is first renamed away atomically, and whatever was renamed is put back unless it is the
+ * handled file.
+ */
+async function removeExact(file: ReadyFile): Promise<'removed' | 'replaced' | 'missing'> {
+  const parked = path.join(path.dirname(file.path), `${RESERVED_PREFIX}${randomUUID()}`);
+  try {
+    await rename(file.path, parked);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return 'missing';
+    }
+    throw error;
+  }
+
+  if ((await statIdentity(parked)) === file.identity) {
+    await unlink(parked);
+    return 'removed';
+  }
+  await restore(parked, file.path);
+  return 'replaced';
+}
+
+// Puts a parked file back under its name, or under name-1, name-2, ... if that name was taken meanwhile.
+async function restore(parked: string, original: string): Promise<void> {
+  const extension = path.extname(original);
+  const stem = original.slice(0, original.length - extension.length);
+  for (let index = 0; ; index += 1) {
+    const target = index === 0 ? original : `${stem}-${index}${extension}`;
+    try {
+      await link(parked, target);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') {
+        continue;
+      }
+      if (fs.existsSync(target)) {
+        continue;
+      }
+      // No hard links here: rename, which is safe once the name is known to be free.
+      await rename(parked, target);
+      return;
+    }
+    await unlink(parked);
+    return;
+  }
 }
 
 function ignoreMissing(error: NodeJS.ErrnoException): void {

@@ -42,7 +42,7 @@ dispatcher.on('error', (error) => console.error(error));
 await dispatcher.close();
 ```
 
-Files are handled one at a time, oldest first. With `done` removing handled files, a restart picks up whatever is left.
+Files are handled one at a time, oldest first. With `done` removing handled files, a restart picks up whatever is left. Renaming or hard-linking a handled file does not handle it again.
 
 To only observe files:
 
@@ -81,7 +81,7 @@ Events:
 
 `close()` stops watching and waits for running handlers.
 
-A file is handled again after a restart if the process stopped between its handler and `done`.
+A file is handled again after a restart if the process stopped between its handler and `done`; use `file.id` to make the handler idempotent.
 
 ### `watch(directory, options?)`
 
@@ -89,7 +89,7 @@ An async iterable of new files, oldest first. Takes `filter`, `existing` (defaul
 
 ### File
 
-`path`, `name`, `size`, `createdAt`, `text(encoding?)`, `buffer()`, and `stream()`.
+`id` (the same for the same file across restarts), `path`, `name`, `size`, `createdAt`, `text(encoding?)`, `buffer()`, and `stream()`.
 
 ## License
 
