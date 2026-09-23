@@ -1,0 +1,36 @@
+name: Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      files:
+        description: 'Files created in the burst.'
+        required: false
+        default: '10000'
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: benchmark-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Fast listener
+        run: npm run benchmark -- --files=${{ inputs.files }} --work-us=0
+
+      - name: Listener doing 1 ms of work per file
+        run: npm run benchmark -- --files=${{ inputs.files }} --work-us=1000
