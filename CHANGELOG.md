@@ -24,7 +24,7 @@ A redesign for processing files dropped into a directory. Every created file is 
 
 ### Fixed
 
-- Files are no longer lost when `fs.watch` drops events under bursts. In the benchmark, plain `fs.watch` lost up to 76% of files on Windows and 14% on Linux.
+- Files are no longer lost when `fs.watch` drops events under bursts. In the benchmark, plain `fs.watch` lost up to 75% of files on Windows and 16% on Linux.
 - Files are no longer read before their content is written.
 - A file replaced under the name of a handled file is handled again, while a handled file renamed or hard-linked under another name, or reported under another spelling (an 8.3 short name or other letter case), is not.
 - `done: 'delete'` never deletes a file that replaced the handled one.

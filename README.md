@@ -11,9 +11,9 @@ Files delivered with complete content, out of 10,000 files written by another pr
 
 | Handler work per file | | Linux | macOS | Windows |
 | --- | --- | ---: | ---: | ---: |
-| none | `fs.watch` | 9,896 | 10,000 | 4,981 |
+| none | `fs.watch` | 9,871 | 10,000 | 6,049 |
 | | file-dispatcher | **10,000** | **10,000** | **10,000** |
-| 1 ms | `fs.watch` | 8,591 | 10,000 | 2,421 |
+| 1 ms | `fs.watch` | 8,415 | 10,000 | 2,498 |
 | | file-dispatcher | **10,000** | **10,000** | **10,000** |
 
 ## Install
