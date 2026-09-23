@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 
 export interface ReadyFile {
@@ -15,7 +16,7 @@ export interface WatcherOptions {
   filter: (name: string) => boolean;
   /** Treat files present at start as new. */
   existing: boolean;
-  /** Hand out files strictly in creation order. */
+  /** Hand out ready files oldest first, after a scan confirms no older file was missed. */
   ordered: boolean;
   stabilityThreshold: number;
   rescanInterval: number;
@@ -25,31 +26,56 @@ export interface WatcherOptions {
   onError: (error: Error) => void;
 }
 
-interface Candidate extends ReadyFile {
+interface KnownEntry {
+  // Scans started when the name was added; a scan only forgets names added before it started.
+  addedAtScan: number;
+  // Identity of the file last seen under this name, used to tell a replacement from a modification.
+  identity: string | undefined;
+}
+
+interface Candidate {
+  name: string;
+  path: string;
   seq: number;
-  mtimeMs: number;
-  size: number;
+  identity: string;
+  size: bigint;
+  mtimeNs: bigint;
+  createdMs: number;
+  discoveredAt: number;
   due: number;
-  // ordered mode hands a file out only after this scan completes: a full listing taken after the
+  // Ordered mode hands a file out only after this scan completes: a full listing taken after the
   // file was found reveals any older file whose watch event was dropped.
   confirmedByScan: number;
+  // A watch event arrived while the file was being handled; check it again once released.
+  recheck: boolean;
   state: 'settling' | 'checking' | 'ready' | 'taken';
 }
 
-// Watch events add their file right away; rescans only recover dropped events, so they can wait.
+// Rescans recover dropped events, so they can wait for a burst to pass.
 const SCAN_DEBOUNCE_MS = 100;
-// Bounds concurrent fs.stat calls while files settle.
+// Periodic rescans may use at most about 1/SCAN_BUDGET of the time, so huge directories rescan less often.
+const SCAN_BUDGET = 20;
+const MIN_RETRY_MS = 500;
+const MAX_RETRY_MS = 30_000;
+// In ordered mode an older file still being written holds back newer ready files, but only for
+// max(HOLD_MIN_MS, HOLD_THRESHOLDS × stabilityThreshold): a file appended forever must not stall the queue.
+const HOLD_MIN_MS = 1000;
+const HOLD_THRESHOLDS = 20;
+// Bounds concurrent fs.stat calls.
 const STAT_CONCURRENCY = 32;
 // The callback API is several times faster than fs.promises for many small files.
-const stat = promisify(fs.stat);
+const statBigInt = promisify((file: string, callback: (error: NodeJS.ErrnoException | null, stats: fs.BigIntStats) => void) =>
+  fs.stat(file, { bigint: true }, callback),
+);
 
 /**
  * Finds every regular file created in a directory, once, after it has finished being written.
  *
  * fs.watch drops events when the kernel buffer overflows (Windows under almost any burst, Linux when
- * the event loop is busy) and reports a file before its content is written. Here watch events only
- * add their file early and trigger a rescan; new files are found by diffing directory listings, so a
- * dropped event cannot lose a file, and a file is handed out only after its size and mtime settle.
+ * the event loop is busy) and reports a file before its content is written. Here a watch event only
+ * points at a name to check; new files are also found by diffing directory listings, so a dropped
+ * event cannot lose a file, and a file is handed out only after its size and mtime settle. Files are
+ * identified by device, inode, and birth time, so a file replaced under a known name is new.
  *
  * Consumers pull files with take() and hand them back with release(), which gives natural
  * backpressure: nothing is read or buffered beyond file metadata.
@@ -57,81 +83,80 @@ const stat = promisify(fs.stat);
 export class DirectoryWatcher {
   private readonly options: WatcherOptions;
   private watcher: fs.FSWatcher | undefined;
-  private rescanTimer: NodeJS.Timeout | undefined;
+  private periodicTimer: NodeJS.Timeout | undefined;
   private scanTimer: NodeJS.Timeout | undefined;
   private settleTimer: NodeJS.Timeout | undefined;
   private eventFlush: NodeJS.Immediate | undefined;
+  private holdTimer: NodeJS.Timeout | undefined;
   private stopped = false;
   private scanning = false;
   private scanRequested = false;
   private lastScanError: string | undefined;
+  private scanFailures = 0;
+  private lastScanMs = 0;
   private nextSeq = 0;
   private scansStarted = 0;
   private scansCompleted = 0;
-  private pendingNames: string[] = [];
-  // Names in the directory, mapped to the number of scans started when each was added.
-  private readonly known = new Map<string, number>();
+  private newNames = new Set<string>();
+  private changedNames = new Set<string>();
+  private readonly known = new Map<string, KnownEntry>();
   private readonly candidates = new Map<string, Candidate>();
   // Every candidate waits the same threshold, so due times grow in insertion order and a FIFO suffices.
   private readonly settling = new Queue<Candidate>();
   private readonly ready = new Queue<Candidate>();
-  private readonly ordered = new Heap<Candidate>(
-    (a, b) => a.createdMs - b.createdMs || a.name.localeCompare(b.name) || a.seq - b.seq,
-  );
+  // Ordered mode: ready files, and files not yet ready that may hold them back, both oldest first.
+  private readonly ordered = new Heap<Candidate>(byCreation);
+  private readonly pending = new Heap<Candidate>(byCreation);
+  private readonly holdMs: number;
 
   constructor(options: WatcherOptions) {
     this.options = options;
+    this.holdMs = Math.max(HOLD_MIN_MS, HOLD_THRESHOLDS * options.stabilityThreshold);
   }
 
   /** Starts watching. Throws if the directory cannot be read. */
   start(): void {
-    const { directory } = this.options;
-    // libuv on Windows aborts when a watched 8.3 short path (C:\Users\RUNNER~1) differs from the long
-    // path it reports, so watch the real path. Handed-out paths keep the directory as given.
-    const watchPath = fs.realpathSync.native(directory);
-    // Watch first so files created while the baseline is read still trigger a scan.
-    const watcher = fs.watch(watchPath, { persistent: true }, (_, name) => {
-      if (name) {
-        this.addEventName(name.toString());
-      }
-      this.requestScan();
-    });
-    watcher.on('error', (error) => this.options.onError(error));
+    // Watch first so files created while the baseline is read still produce events.
+    this.watch(true);
 
     let names: string[];
     try {
-      names = fs.readdirSync(directory);
+      names = fs.readdirSync(this.options.directory);
     } catch (error) {
-      watcher.close();
+      this.watcher?.close();
       throw error;
     }
 
-    this.watcher = watcher;
     for (const name of names) {
-      this.known.set(name, 0);
+      this.known.set(name, { addedAtScan: 0, identity: undefined });
     }
+    const matching = names.filter((name) => this.options.filter(name));
     if (this.options.existing) {
       // The baseline is a full listing, which counts as scan 0 for ordering.
-      this.track(this.addCandidates(names.filter(this.options.filter), 0));
+      this.track(this.addCandidates(matching, 0));
+    } else {
+      // Record identities so a file later replaced under one of these names is recognized as new.
+      this.track(this.recordIdentities(matching));
     }
-    if (this.options.rescanInterval > 0) {
-      this.rescanTimer = setInterval(() => this.requestScan(), this.options.rescanInterval);
-    }
+    this.schedulePeriodic();
   }
 
   /** Stops watching. Files not yet taken are discarded. */
   stop(): void {
     this.stopped = true;
     this.watcher?.close();
-    clearInterval(this.rescanTimer);
+    this.watcher = undefined;
+    clearTimeout(this.periodicTimer);
     clearTimeout(this.scanTimer);
     clearTimeout(this.settleTimer);
     clearImmediate(this.eventFlush);
+    clearTimeout(this.holdTimer);
     this.known.clear();
     this.candidates.clear();
     this.settling.clear();
     this.ready.clear();
     this.ordered.clear();
+    this.pending.clear();
   }
 
   /** Returns the next file ready to be processed, if any. */
@@ -142,20 +167,34 @@ export class DirectoryWatcher {
 
     let next: Candidate | undefined;
     if (this.options.ordered) {
-      // Wait for the oldest pending file even if newer ones are ready.
-      const oldest = this.ordered.peek((candidate) => this.isCurrent(candidate) && candidate.state !== 'taken');
-      if (oldest?.state === 'ready' && oldest.confirmedByScan <= this.scansCompleted) {
+      const oldest = this.ordered.peek((candidate) => this.isCurrent(candidate, 'ready'));
+      if (!oldest) {
+        return undefined;
+      }
+
+      // An older file that was found but is still being written goes first, within the hold limit.
+      const now = performance.now();
+      const holding = this.pending.peek(
+        (candidate) =>
+          (this.isCurrent(candidate, 'settling') || this.isCurrent(candidate, 'checking')) &&
+          now - candidate.discoveredAt < this.holdMs,
+      );
+      if (holding && byCreation(holding, oldest) < 0) {
+        this.wakeAfter(holding.discoveredAt + this.holdMs - now);
+        return undefined;
+      }
+      if (oldest.confirmedByScan <= this.scansCompleted) {
         next = this.ordered.pop();
       }
     } else {
-      next = this.ready.shift((candidate) => this.isCurrent(candidate) && candidate.state === 'ready');
+      next = this.ready.shift((candidate) => this.isCurrent(candidate, 'ready'));
     }
 
     if (!next) {
       return undefined;
     }
     next.state = 'taken';
-    return { name: next.name, path: next.path, size: next.size, createdMs: next.createdMs };
+    return { name: next.name, path: next.path, size: Number(next.size), createdMs: next.createdMs };
   }
 
   /**
@@ -164,28 +203,135 @@ export class DirectoryWatcher {
    */
   release(file: ReadyFile, removed = false): void {
     const candidate = this.candidates.get(file.name);
-    if (candidate?.state === 'taken') {
-      this.candidates.delete(file.name);
-      if (removed) {
-        this.known.delete(file.name);
-      }
-    }
-  }
-
-  // Fast path: take new names straight from watch events instead of waiting for the next rescan.
-  private addEventName(name: string): void {
-    if (this.stopped || this.known.has(name) || !this.options.filter(name)) {
+    if (candidate?.state !== 'taken') {
       return;
     }
 
-    this.known.set(name, this.scansStarted);
-    this.pendingNames.push(name);
+    this.candidates.delete(file.name);
+    if (removed) {
+      this.known.delete(file.name);
+    } else if (candidate.recheck) {
+      this.queueName(file.name);
+    }
+  }
+
+  private wakeAfter(ms: number): void {
+    clearTimeout(this.holdTimer);
+    this.holdTimer = setTimeout(() => this.options.onAvailable(), Math.max(0, ms));
+  }
+
+  private watch(initial: boolean): void {
+    // libuv on Windows aborts when a watched 8.3 short path (C:\Users\RUNNER~1) differs from the long
+    // path it reports, so watch the real path. Handed-out paths keep the directory as given.
+    let watcher: fs.FSWatcher;
+    try {
+      watcher = fs.watch(fs.realpathSync.native(this.options.directory), { persistent: true }, (_, name) =>
+        name ? this.queueName(name.toString()) : this.requestScan(),
+      );
+    } catch (error) {
+      if (initial) {
+        throw error;
+      }
+      return;
+    }
+
+    watcher.on('error', (error) => {
+      // The watcher is unusable after an error; rescans keep running and re-watch once the directory lists again.
+      watcher.close();
+      if (this.watcher === watcher) {
+        this.watcher = undefined;
+      }
+      if (!this.stopped) {
+        this.options.onError(error);
+        this.requestScan();
+      }
+    });
+    this.watcher = watcher;
+  }
+
+  // Watch events name a file to check; new names also trigger a rescan in case other events were dropped.
+  private queueName(name: string): void {
+    if (this.stopped) {
+      return;
+    }
+
+    const entry = this.known.get(name);
+    if (!entry) {
+      this.known.set(name, { addedAtScan: this.scansStarted, identity: undefined });
+      if (this.options.filter(name)) {
+        this.newNames.add(name);
+      }
+      this.requestScan();
+    } else if (this.options.filter(name)) {
+      const candidate = this.candidates.get(name);
+      if (candidate?.state === 'taken') {
+        candidate.recheck = true;
+        return;
+      }
+      if (candidate) {
+        // Settling already checks it again.
+        return;
+      }
+      this.changedNames.add(name);
+    } else {
+      return;
+    }
+
     this.eventFlush ??= setImmediate(() => {
       this.eventFlush = undefined;
-      const names = this.pendingNames;
-      this.pendingNames = [];
-      this.track(this.addCandidates(names, this.scansStarted + 1));
+      const added = [...this.newNames];
+      const changed = [...this.changedNames];
+      this.newNames.clear();
+      this.changedNames.clear();
+      this.track(this.addCandidates(added, this.scansStarted + 1));
+      this.track(this.checkChanged(changed));
     });
+  }
+
+  // A known name changed: forget it if removed, and treat it as new if a different file replaced it.
+  private async checkChanged(names: string[]): Promise<void> {
+    if (names.length === 0) {
+      return;
+    }
+
+    const observed = await this.statAll(names);
+    if (this.stopped) {
+      return;
+    }
+
+    const replaced: string[] = [];
+    for (const { name, stats } of observed) {
+      const entry = this.known.get(name);
+      if (!entry || this.candidates.has(name)) {
+        continue;
+      }
+      if (!stats) {
+        this.known.delete(name);
+      } else if (stats.isFile()) {
+        const identity = identityOf(stats);
+        if (entry.identity === undefined) {
+          entry.identity = identity;
+        } else if (entry.identity !== identity) {
+          entry.addedAtScan = this.scansStarted;
+          replaced.push(name);
+        }
+      }
+    }
+
+    if (replaced.length > 0) {
+      await this.addCandidates(replaced, this.scansStarted + 1);
+      this.requestScan();
+    }
+  }
+
+  private async recordIdentities(names: string[]): Promise<void> {
+    const observed = await this.statAll(names);
+    for (const { name, stats } of observed) {
+      const entry = this.known.get(name);
+      if (entry && entry.identity === undefined && stats?.isFile()) {
+        entry.identity = identityOf(stats);
+      }
+    }
   }
 
   private requestScan(): void {
@@ -204,8 +350,19 @@ export class DirectoryWatcher {
     }, SCAN_DEBOUNCE_MS);
   }
 
+  private schedulePeriodic(): void {
+    if (this.stopped || this.options.rescanInterval === 0) {
+      return;
+    }
+
+    clearTimeout(this.periodicTimer);
+    const delay = Math.max(this.options.rescanInterval, this.lastScanMs * SCAN_BUDGET);
+    this.periodicTimer = setTimeout(() => this.requestScan(), delay);
+  }
+
   private async scan(): Promise<void> {
     const scanId = ++this.scansStarted;
+    const startedAt = performance.now();
     this.scanning = true;
     this.scanRequested = false;
 
@@ -215,13 +372,12 @@ export class DirectoryWatcher {
         return;
       }
 
-      this.lastScanError = undefined;
       const present = new Set<string>();
       const added: string[] = [];
       for (const entry of entries) {
         present.add(entry.name);
         if (!this.known.has(entry.name)) {
-          this.known.set(entry.name, scanId);
+          this.known.set(entry.name, { addedAtScan: scanId, identity: undefined });
           if (!entry.isDirectory() && this.options.filter(entry.name)) {
             added.push(entry.name);
           }
@@ -230,26 +386,41 @@ export class DirectoryWatcher {
 
       // Forget deleted names so a file created again under the same name is found again. Names
       // added after this scan started may postdate its listing, so they are kept until a later scan.
-      for (const [name, addedAtScan] of this.known) {
-        if (addedAtScan < scanId && !present.has(name) && !this.candidates.has(name)) {
+      for (const [name, entry] of this.known) {
+        if (entry.addedAtScan < scanId && !present.has(name) && !this.candidates.has(name)) {
           this.known.delete(name);
         }
       }
 
       await this.addCandidates(added, scanId);
-      if (!this.stopped) {
-        this.scansCompleted = scanId;
-        this.options.onAvailable();
+      if (this.stopped) {
+        return;
       }
+
+      this.scansCompleted = scanId;
+      this.scanFailures = 0;
+      this.lastScanError = undefined;
+      this.lastScanMs = performance.now() - startedAt;
+      if (!this.watcher) {
+        this.watch(false);
+      }
+      this.options.onAvailable();
+      this.schedulePeriodic();
     } catch (error) {
-      if (!this.stopped) {
-        const reason = toError(error);
-        // A missing or unreadable directory fails every scan; report it once until a scan succeeds.
-        if (reason.message !== this.lastScanError) {
-          this.lastScanError = reason.message;
-          this.options.onError(reason);
-        }
+      if (this.stopped) {
+        return;
       }
+
+      const reason = toError(error);
+      // A missing or unreadable directory fails every scan; report it once until a scan succeeds.
+      if (reason.message !== this.lastScanError) {
+        this.lastScanError = reason.message;
+        this.options.onError(reason);
+      }
+      // Retry even with periodic rescans disabled: ordered mode waits for a completed scan.
+      const delay = Math.min(MAX_RETRY_MS, MIN_RETRY_MS * 2 ** this.scanFailures++);
+      clearTimeout(this.periodicTimer);
+      this.periodicTimer = setTimeout(() => this.requestScan(), delay);
     } finally {
       if (!this.stopped) {
         this.scanning = false;
@@ -261,46 +432,54 @@ export class DirectoryWatcher {
   }
 
   private async addCandidates(names: string[], confirmedByScan: number): Promise<void> {
-    const observed = await mapLimit(names, STAT_CONCURRENCY, async (name) => {
-      try {
-        return { name, stats: await stat(path.join(this.options.directory, name)) };
-      } catch {
-        return { name, stats: undefined };
-      }
-    });
+    if (names.length === 0) {
+      return;
+    }
+
+    const observed = await this.statAll(names);
     if (this.stopped) {
       return;
     }
 
-    for (const entry of observed) {
-      // The event was for a removal (often of a file just handled). Forget the name so a file created
-      // under it later is found; if one already exists, the rescan its event requested finds it.
-      if (!entry.stats && !this.candidates.has(entry.name)) {
-        this.known.delete(entry.name);
+    const now = performance.now();
+    const due = now + this.options.stabilityThreshold;
+    for (const { name, stats } of observed) {
+      if (this.candidates.has(name)) {
+        continue;
       }
-    }
-
-    const due = Date.now() + this.options.stabilityThreshold;
-    for (const entry of observed) {
-      if (!entry.stats?.isFile() || this.candidates.has(entry.name)) {
+      if (!stats) {
+        // The event was for a removal (often of a file just handled). Forget the name so a file
+        // created under it later is found; if one already exists, a rescan finds it.
+        this.known.delete(name);
+        continue;
+      }
+      if (!stats.isFile()) {
         continue;
       }
 
+      const identity = identityOf(stats);
+      const entry = this.known.get(name);
+      if (entry) {
+        entry.identity = identity;
+      }
       const candidate: Candidate = {
-        name: entry.name,
-        path: path.join(this.options.directory, entry.name),
+        name,
+        path: path.join(this.options.directory, name),
         seq: this.nextSeq++,
-        createdMs: entry.stats.birthtimeMs > 0 ? entry.stats.birthtimeMs : entry.stats.mtimeMs,
-        size: entry.stats.size,
-        mtimeMs: entry.stats.mtimeMs,
+        identity,
+        size: stats.size,
+        mtimeNs: stats.mtimeNs,
+        createdMs: Number(stats.birthtimeNs > 0n ? stats.birthtimeNs : stats.mtimeNs) / 1e6,
+        discoveredAt: now,
         due,
         confirmedByScan,
+        recheck: false,
         state: 'settling',
       };
-      this.candidates.set(candidate.name, candidate);
+      this.candidates.set(name, candidate);
       this.settling.push(candidate);
       if (this.options.ordered) {
-        this.ordered.push(candidate);
+        this.pending.push(candidate);
       }
     }
 
@@ -312,7 +491,7 @@ export class DirectoryWatcher {
       return;
     }
 
-    const next = this.settling.peek((candidate) => this.isCurrent(candidate) && candidate.state === 'settling');
+    const next = this.settling.peek((candidate) => this.isCurrent(candidate, 'settling'));
     if (!next) {
       return;
     }
@@ -320,14 +499,14 @@ export class DirectoryWatcher {
     this.settleTimer = setTimeout(() => {
       this.settleTimer = undefined;
       this.track(this.settle());
-    }, Math.max(0, next.due - Date.now()));
+    }, Math.max(0, next.due - performance.now()));
   }
 
   private async settle(): Promise<void> {
-    const now = Date.now();
+    const now = performance.now();
     const due: Candidate[] = [];
     for (;;) {
-      const next = this.settling.peek((candidate) => this.isCurrent(candidate) && candidate.state === 'settling');
+      const next = this.settling.peek((candidate) => this.isCurrent(candidate, 'settling'));
       if (!next || next.due > now) {
         break;
       }
@@ -336,51 +515,65 @@ export class DirectoryWatcher {
       due.push(next);
     }
 
-    let becameReady = false;
-    await mapLimit(due, STAT_CONCURRENCY, async (candidate) => {
-      let stats: fs.Stats | undefined;
-      try {
-        stats = await stat(candidate.path);
-      } catch {
-        stats = undefined;
-      }
+    const observed = await this.statAll(due.map((candidate) => candidate.name));
+    if (this.stopped) {
+      return;
+    }
 
-      if (this.stopped) {
+    let changed = false;
+    observed.forEach(({ stats }, index) => {
+      const candidate = due[index] as Candidate;
+      if (!stats?.isFile()) {
+        // Deleted or replaced by a non-file before it settled.
+        this.candidates.delete(candidate.name);
+        this.known.delete(candidate.name);
+        changed = true;
         return;
       }
 
-      if (!stats?.isFile()) {
-        // Deleted or replaced before it settled.
-        this.candidates.delete(candidate.name);
-        this.known.delete(candidate.name);
-      } else if (
+      const identity = identityOf(stats);
+      if (
         this.options.stabilityThreshold > 0 &&
-        (stats.size !== candidate.size || stats.mtimeMs !== candidate.mtimeMs)
+        (identity !== candidate.identity || stats.size !== candidate.size || stats.mtimeNs !== candidate.mtimeNs)
       ) {
+        candidate.identity = identity;
         candidate.size = stats.size;
-        candidate.mtimeMs = stats.mtimeMs;
-        candidate.due = Date.now() + this.options.stabilityThreshold;
+        candidate.mtimeNs = stats.mtimeNs;
+        candidate.due = performance.now() + this.options.stabilityThreshold;
         candidate.state = 'settling';
         this.settling.push(candidate);
-      } else {
-        candidate.state = 'ready';
-        becameReady = true;
-        if (!this.options.ordered) {
-          this.ready.push(candidate);
-        }
+        return;
       }
+
+      candidate.identity = identity;
+      candidate.size = stats.size;
+      candidate.state = 'ready';
+      const entry = this.known.get(candidate.name);
+      if (entry) {
+        entry.identity = identity;
+      }
+      (this.options.ordered ? this.ordered : this.ready).push(candidate);
+      changed = true;
     });
 
-    if (!this.stopped) {
-      if (becameReady) {
-        this.options.onAvailable();
-      }
-      this.scheduleSettle();
+    if (changed) {
+      this.options.onAvailable();
     }
+    this.scheduleSettle();
   }
 
-  private isCurrent(candidate: Candidate): boolean {
-    return this.candidates.get(candidate.name) === candidate;
+  private async statAll(names: string[]): Promise<{ name: string; stats: fs.BigIntStats | undefined }[]> {
+    return mapLimit(names, STAT_CONCURRENCY, async (name) => {
+      try {
+        return { name, stats: await statBigInt(path.join(this.options.directory, name)) };
+      } catch {
+        return { name, stats: undefined };
+      }
+    });
+  }
+
+  private isCurrent(candidate: Candidate, state: Candidate['state']): boolean {
+    return candidate.state === state && this.candidates.get(candidate.name) === candidate;
   }
 
   private track(task: Promise<void>): void {
@@ -390,6 +583,14 @@ export class DirectoryWatcher {
       }
     });
   }
+}
+
+function byCreation(a: Candidate, b: Candidate): number {
+  return a.createdMs - b.createdMs || a.name.localeCompare(b.name) || a.seq - b.seq;
+}
+
+function identityOf(stats: fs.BigIntStats): string {
+  return `${stats.dev}:${stats.ino}:${stats.birthtimeNs}`;
 }
 
 export function toError(error: unknown): Error {
