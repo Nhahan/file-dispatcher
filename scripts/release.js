@@ -1,8 +1,8 @@
 'use strict';
 
 // Release helpers used by .github/workflows/release.yml.
-//   node scripts/release.js version <beta|dry-run|stable>  -> prints the version to publish
-//   node scripts/release.js notes [version]                -> prints GitHub release notes from CHANGELOG.md
+//   node scripts/release.js plan <beta|dry-run|stable>  -> JSON { version, tag, publish }
+//   node scripts/release.js notes [version]             -> GitHub release notes from CHANGELOG.md
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -11,6 +11,10 @@ const root = path.join(__dirname, '..');
 
 function readManifest() {
   return JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+}
+
+function readChangelog() {
+  return fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
 }
 
 function nextPatch(version) {
@@ -22,29 +26,33 @@ function nextPatch(version) {
 }
 
 /**
- * Prereleases of an already published version would sort below it, so they build on the next
- * patch version instead. Stable releases must not exist yet.
+ * Decides what a release run publishes. Prereleases of an already published version would sort
+ * below it, so they build on the next patch version. A stable version that is already on npm is not
+ * published again, so a run that failed after publishing can be re-run to finish the GitHub release.
  */
-function resolvePublishVersion({ version, kind, published, build }) {
+function resolvePlan({ version, kind, published, build }) {
   if (kind === 'stable') {
-    if (published) {
-      throw new Error(`${version} is already published. Bump the version before releasing again.`);
-    }
-    return version;
+    return { version, tag: version.includes('-') ? 'next' : 'latest', publish: !published };
   }
 
   const base = published && !version.includes('-') ? nextPatch(version) : version;
   const suffix = `${kind === 'beta' ? 'beta' : 'dryrun'}.${build}`;
-  return base.includes('-') ? `${base}.${suffix}` : `${base}-${suffix}`;
+  return {
+    version: base.includes('-') ? `${base}.${suffix}` : `${base}-${suffix}`,
+    tag: kind === 'beta' ? 'beta' : 'dry-run',
+    publish: true,
+  };
 }
 
 function isPublished(name, version) {
   try {
-    return execFileSync('npm', ['view', `${name}@${version}`, 'version'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
-    }).trim() !== '';
+    return (
+      execFileSync('npm', ['view', `${name}@${version}`, 'version'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: process.platform === 'win32',
+      }).trim() !== ''
+    );
   } catch (error) {
     const output = `${error.stdout || ''}${error.stderr || ''}`;
     if (output.includes('E404')) {
@@ -86,33 +94,28 @@ function getReleaseNotes(changelog, name, version) {
 function main([command, argument] = process.argv.slice(2)) {
   const manifest = readManifest();
 
-  if (command === 'version') {
+  if (command === 'plan') {
     const kind = argument;
     if (!['beta', 'dry-run', 'stable'].includes(kind)) {
-      throw new Error('Usage: node scripts/release.js version <beta|dry-run|stable>');
+      throw new Error('Usage: node scripts/release.js plan <beta|dry-run|stable>');
     }
-    const published = kind !== 'dry-run' && isPublished(manifest.name, manifest.version);
-    process.stdout.write(
-      `${resolvePublishVersion({
-        version: manifest.version,
-        kind,
-        published,
-        build:
-          kind === 'beta'
-            ? `${process.env.GITHUB_RUN_NUMBER || '0'}.${process.env.GITHUB_RUN_ATTEMPT || '1'}`
-            : process.env.GITHUB_RUN_ID || 'local',
-      })}\n`,
-    );
+    // Every kind checks what a stable release of this version needs, so a dry run proves it.
+    getReleaseNotes(readChangelog(), manifest.name, manifest.version);
+    const published = isPublished(manifest.name, manifest.version);
+    const build =
+      kind === 'beta'
+        ? `${process.env.GITHUB_RUN_NUMBER || '0'}.${process.env.GITHUB_RUN_ATTEMPT || '1'}`
+        : process.env.GITHUB_RUN_ID || 'local';
+    process.stdout.write(`${JSON.stringify(resolvePlan({ version: manifest.version, kind, published, build }))}\n`);
     return;
   }
 
   if (command === 'notes') {
-    const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
-    process.stdout.write(getReleaseNotes(changelog, manifest.name, argument || manifest.version));
+    process.stdout.write(getReleaseNotes(readChangelog(), manifest.name, argument || manifest.version));
     return;
   }
 
-  throw new Error('Usage: node scripts/release.js <version|notes> [argument]');
+  throw new Error('Usage: node scripts/release.js <plan|notes> [argument]');
 }
 
 if (require.main === module) {
@@ -128,5 +131,5 @@ module.exports = {
   getChangelogSection,
   getReleaseNotes,
   nextPatch,
-  resolvePublishVersion,
+  resolvePlan,
 };

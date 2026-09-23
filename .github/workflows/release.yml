@@ -24,6 +24,7 @@ jobs:
   guard:
     name: release-branch-guard
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Allow main, or ci-verify/* for dry runs
         env:
@@ -47,50 +48,73 @@ jobs:
     name: publish
     runs-on: ubuntu-latest
     needs: ci
+    timeout-minutes: 15
     permissions:
       contents: write
       id-token: write
     steps:
       - uses: actions/checkout@v6
 
-      # npm >= 11.5.1 is required for trusted publishing (OIDC).
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
+      - name: Require npm with trusted publishing support
+        run: |
+          node -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number);
+            if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
+              console.error(`Trusted publishing needs npm >= 11.5.1, found ${process.argv[1]}.`);
+              process.exit(1);
+            }' "$(npm --version)"
+
       - run: npm ci
 
-      - name: Resolve release
-        id: release
+      - name: Plan release
+        id: plan
         env:
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
           if [ "$DRY_RUN" = "true" ]; then
-            kind="dry-run"; tag="dry-run"
+            kind="dry-run"
           elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
-            kind="beta"; tag="beta"
+            kind="beta"
           else
-            kind="stable"; tag="latest"
+            kind="stable"
           fi
-          version="$(node scripts/release.js version "$kind")"
-          if [ "$kind" = "stable" ] && [[ "$version" == *-* ]]; then
-            tag="next"
+          plan="$(node scripts/release.js plan "$kind")"
+          version="$(node -p 'JSON.parse(process.argv[1]).version' "$plan")"
+          tag="$(node -p 'JSON.parse(process.argv[1]).tag' "$plan")"
+          publish="$(node -p 'JSON.parse(process.argv[1]).publish' "$plan")"
+
+          if [ "$kind" = "beta" ]; then
+            # Re-running an old push must not publish old code under the beta tag.
+            git fetch --quiet --depth=1 origin main
+            if [ "$(git rev-parse FETCH_HEAD)" != "$GITHUB_SHA" ]; then
+              echo "::notice::main has moved past $GITHUB_SHA; skipping the beta."
+              publish="false"
+            fi
           fi
           if [ "$kind" = "stable" ]; then
-            # Fail before publishing when CHANGELOG.md has no entry for this version.
             node scripts/release.js notes "$version" > "$RUNNER_TEMP/release-notes.md"
+            if [ "$publish" = "false" ]; then
+              echo "::notice::$version is already on npm; only the GitHub release is created if missing."
+            fi
           fi
+
           echo "kind=$kind" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Publishing $version with dist-tag $tag ($kind)."
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "Plan: $kind $version with dist-tag $tag, publish=$publish."
 
       - name: Publish to npm
+        if: ${{ steps.plan.outputs.publish == 'true' }}
         env:
-          KIND: ${{ steps.release.outputs.kind }}
-          TAG: ${{ steps.release.outputs.tag }}
-          VERSION: ${{ steps.release.outputs.version }}
+          KIND: ${{ steps.plan.outputs.kind }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          VERSION: ${{ steps.plan.outputs.version }}
         run: |
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           if [ "$KIND" = "dry-run" ]; then
@@ -100,11 +124,15 @@ jobs:
           fi
 
       - name: Create GitHub release
-        if: ${{ steps.release.outputs.kind == 'stable' }}
+        if: ${{ steps.plan.outputs.kind == 'stable' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.release.outputs.version }}
+          VERSION: ${{ steps.plan.outputs.version }}
         run: |
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            echo "Release v$VERSION already exists."
+            exit 0
+          fi
           flags=()
           if [[ "$VERSION" == *-* ]]; then
             flags+=(--prerelease)

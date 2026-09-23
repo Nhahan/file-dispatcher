@@ -12,5 +12,8 @@ const files = fs
   .filter((file) => file.endsWith('.test.js'))
   .map((file) => path.join(testDir, file));
 
-const result = spawnSync(process.execPath, ['--test', ...process.argv.slice(2), ...files], { stdio: 'inherit' });
+// A hung test fails after two minutes instead of holding CI until the job times out.
+const result = spawnSync(process.execPath, ['--test', '--test-timeout=120000', ...process.argv.slice(2), ...files], {
+  stdio: 'inherit',
+});
 process.exit(result.status ?? 1);

@@ -15,6 +15,7 @@ jobs:
   benchmark:
     name: benchmark-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -29,8 +30,14 @@ jobs:
 
       - run: npm ci
 
-      - name: Fast listener
-        run: npm run benchmark -- --files=${{ inputs.files }} --work-us=0
+      - name: Fast handler
+        shell: bash
+        env:
+          FILES: ${{ inputs.files }}
+        run: npm run benchmark -- "--files=$FILES" --work-us=0
 
-      - name: Listener doing 1 ms of work per file
-        run: npm run benchmark -- --files=${{ inputs.files }} --work-us=1000
+      - name: Handler doing 1 ms of work per file
+        shell: bash
+        env:
+          FILES: ${{ inputs.files }}
+        run: npm run benchmark -- "--files=$FILES" --work-us=1000
