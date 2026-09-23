@@ -1,21 +1,11 @@
-# Dependency directories
-/node_modules
-
-# Build output
-/dist
-/build
-/native/build
-
-# Environment variables
-.env
-
-# IDE and editor files
-/.vscode
-/.idea
-*.sublime-*
-*.swp
-
-# Logs
-/logs
-*.log
-npm-debug.log*
+node_modules/
+dist/
+.test-dist/
+*.tgz
+*.tsbuildinfo
+coverage/
+.DS_Store
+.idea/
+.vscode/
+AGENTS.md
+CLAUDE.md
