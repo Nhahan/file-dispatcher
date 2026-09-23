@@ -16,8 +16,10 @@ npm run benchmark   # compare with plain fs.watch
 
 ## Releasing
 
+Before the first release, add a trusted publisher on npmjs.com (package settings → Trusted publisher → GitHub Actions) for the repository `Nhahan/file-dispatcher` and the workflow `release.yml`.
+
 1. In one commit, set the new version in `package.json` and add a matching `## <version>` section to `CHANGELOG.md`. Tests fail when the section is missing.
 2. Merge it to `main`, then run the `Release` workflow manually with `dry_run` unchecked.
-3. The workflow publishes to npm with provenance through trusted publishing (OIDC) and creates the `v<version>` GitHub release from the CHANGELOG section.
+3. The workflow publishes to npm with provenance through trusted publishing (OIDC) and creates the `v<version>` GitHub release from the CHANGELOG section. If a run fails after publishing, re-run it: a version already on npm is not published again, and the missing release is created.
 
 Betas published from `main` use the next patch version once the current version is released, so they never sort below it.

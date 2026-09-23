@@ -14,16 +14,18 @@ A redesign for processing files dropped into a directory. Every created file is 
 
 ### Added
 
-- `done` and `failed` actions delete or move handled files, so a restart resumes with the files left in the directory.
+- `done` and `failed` actions delete or move handled files, so a restart resumes with the files left in the directory. Moves never overwrite, and failed actions are retried without running the handler again.
 - `existing`, `concurrency`, `stabilityThreshold`, `rescanInterval`, and `signal` options.
+- Handlers receive an `AbortSignal` that aborts when the dispatcher closes.
 - `filter` accepts a `RegExp` or a predicate.
 - `watch()` async iterator.
-- `processed`, `failed`, and `error` events.
+- `processed`, `failed`, and `error` events, and `ActionError`.
 
 ### Fixed
 
-- Files are no longer lost when `fs.watch` drops events under bursts. In the benchmark, plain `fs.watch` lost up to 75% of files on Windows and 14% on Linux.
+- Files are no longer lost when `fs.watch` drops events under bursts. In the benchmark, plain `fs.watch` lost up to 79% of files on Windows and 14% on Linux.
 - Files are no longer read before their content is written.
+- A file replaced under the name of a handled file is handled again.
 - Processing no longer stops permanently after two deleted or empty files.
 - Binary files are no longer truncated at the first NUL byte.
 - Works on every platform and Node.js version; 3.x shipped a binary only for macOS arm64 on Node.js 18.
