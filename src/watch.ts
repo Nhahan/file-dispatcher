@@ -71,7 +71,7 @@ export class FileWatcher implements AsyncIterableIterator<DispatchedFile> {
 
   private async pull(): Promise<IteratorResult<DispatchedFile, undefined>> {
     if (this.current) {
-      this.watcher.release(this.current);
+      this.watcher.release(this.current, false);
       this.current = undefined;
     }
 
