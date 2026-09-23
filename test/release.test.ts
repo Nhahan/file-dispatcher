@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { describe, test } from 'node:test';
+
+const root = path.join(__dirname, '..', '..');
+const { getChangelogSection, getReleaseNotes, nextPatch, resolvePublishVersion } = require(
+  path.join(root, 'scripts', 'release.js'),
+);
+const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+
+const CHANGELOG = ['# Changelog', '', '## 4.1.0', '', '### Added', '', '- New.', '', '## 4.0.0', '', '- Old.', ''].join('\n');
+
+describe('release helpers', () => {
+  test('publishes stable versions only once', () => {
+    assert.equal(resolvePublishVersion({ version: '4.0.0', kind: 'stable', published: false, build: '' }), '4.0.0');
+    assert.throws(
+      () => resolvePublishVersion({ version: '4.0.0', kind: 'stable', published: true, build: '' }),
+      /already published/,
+    );
+  });
+
+  test('bases prereleases on the next patch once a version is published', () => {
+    assert.equal(resolvePublishVersion({ version: '4.1.0', kind: 'beta', published: false, build: '7.1' }), '4.1.0-beta.7.1');
+    assert.equal(resolvePublishVersion({ version: '4.0.0', kind: 'beta', published: true, build: '7.1' }), '4.0.1-beta.7.1');
+    assert.equal(resolvePublishVersion({ version: '4.0.0', kind: 'dry-run', published: false, build: '99' }), '4.0.0-dryrun.99');
+    assert.equal(nextPatch('4.9.19'), '4.9.20');
+  });
+
+  test('builds release notes from the matching CHANGELOG section', () => {
+    assert.equal(getChangelogSection(CHANGELOG, '4.1.0'), '### Added\n\n- New.');
+    const notes = getReleaseNotes(CHANGELOG, 'file-dispatcher', '4.1.0');
+    assert.match(notes, /npm install file-dispatcher@4\.1\.0/);
+    assert.doesNotMatch(notes, /Old/);
+    assert.throws(() => getReleaseNotes(CHANGELOG, 'file-dispatcher', '9.9.9'), /no "## 9\.9\.9" section/);
+  });
+
+  test('CHANGELOG documents the current package version', () => {
+    const changelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
+    assert.notEqual(getChangelogSection(changelog, manifest.version), '');
+  });
+});
