@@ -1,12 +1,12 @@
 'use strict';
 
-// Compares plain fs.watch with FileDispatcher while another process creates files in a burst.
+// Compares plain fs.watch with dispatch() while another process creates files in a burst.
 // Usage: node scripts/benchmark.js [--files=10000] [--size=4096] [--work-us=0] [--rounds=3]
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { FdEventType, FileDispatcher } = require('../dist');
+const { dispatch } = require('../dist');
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((arg) => {
@@ -59,10 +59,8 @@ function watchWithFs(dir, record) {
 }
 
 function watchWithDispatcher(dir, record) {
-  const dispatcher = new FileDispatcher({ path: dir });
-  dispatcher.on(FdEventType.Success, (filePath, content) => record(path.basename(filePath), content));
-  dispatcher.start();
-  return () => dispatcher.stop();
+  const dispatcher = dispatch(dir, async (file) => record(file.name, await file.text()), { concurrency: 16 });
+  return () => dispatcher.close();
 }
 
 async function measure(label, watch) {
