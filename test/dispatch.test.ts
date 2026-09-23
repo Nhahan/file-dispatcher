@@ -779,6 +779,33 @@ describe('dispatch', () => {
     assert.match(errors[0]?.message ?? '', /EMFILE/);
   });
 
+  test('does not let one stalled scan delay the files found meanwhile', async (t) => {
+    const readdir = fsp.readdir;
+    let stalls = 1;
+    t.mock.method(fsp, 'readdir', async (...args: Parameters<typeof fsp.readdir>) => {
+      const entries = await readdir(...args);
+      if (stalls > 0) {
+        stalls -= 1;
+        await sleep(600);
+      }
+      return entries;
+    });
+    let emit: fs.WatchListener<string> = () => {};
+    t.mock.method(fs, 'watch', (_target: fs.PathLike, _options: fs.WatchOptions, listener: fs.WatchListener<string>) => {
+      emit = listener;
+      return Object.assign(new EventEmitter(), { close: () => {} });
+    });
+    const { processed } = collect({ rescanInterval: 0 });
+
+    // Starts the stalled scan, then creates a file its listing does not include.
+    write(dir, 'first.txt');
+    emit('rename', 'first.txt');
+    await sleep(200);
+    write(dir, 'second.txt');
+    emit('rename', 'second.txt');
+    await waitFor(() => processed.length === 2, 3000);
+  });
+
   test('does not rescan the directory for events on files it already handled', async (t) => {
     const readdir = t.mock.method(fsp, 'readdir');
     let emit: fs.WatchListener<string> = () => {};

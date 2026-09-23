@@ -69,6 +69,9 @@ interface Candidate {
 const SCAN_DEBOUNCE_MS = 100;
 // Rescans may use at most about 1/SCAN_BUDGET of the time, so huge directories rescan less often.
 const SCAN_BUDGET = 20;
+// The cost of a scan is the fastest of the last few. A scan stalled by a busy process says nothing about
+// the directory, and would otherwise delay the next scan, and the files it confirms, by SCAN_BUDGET times.
+const SCAN_COST_SAMPLES = 4;
 const MIN_RETRY_MS = 500;
 const MAX_RETRY_MS = 30_000;
 // In ordered mode an older file still being written holds back newer ready files, but only for
@@ -119,7 +122,7 @@ export class DirectoryWatcher {
   private scanRequested = false;
   private lastScanError: string | undefined;
   private scanFailures = 0;
-  private lastScanMs = 0;
+  private scanTimes: number[] = [];
   private nextSeq = 0;
   private scansStarted = 0;
   private scansCompleted = 0;
@@ -148,12 +151,15 @@ export class DirectoryWatcher {
     this.watch(true);
 
     let entries: fs.Dirent[];
+    const startedAt = performance.now();
     try {
       entries = fs.readdirSync(this.options.directory, { withFileTypes: true });
     } catch (error) {
       this.closeWatcher();
       throw error;
     }
+    // A synchronous listing is not slowed by anything else the process does.
+    this.scanTimes.push(performance.now() - startedAt);
 
     for (const entry of entries) {
       if (entry.name.startsWith(RESERVED_PREFIX)) {
@@ -445,8 +451,12 @@ export class DirectoryWatcher {
         this.scanTimer = undefined;
         this.track(this.scan());
       },
-      Math.max(SCAN_DEBOUNCE_MS, this.lastScanMs * SCAN_BUDGET),
+      Math.max(SCAN_DEBOUNCE_MS, this.scanCost() * SCAN_BUDGET),
     );
+  }
+
+  private scanCost(): number {
+    return Math.min(...this.scanTimes);
   }
 
   private schedulePeriodic(): void {
@@ -455,7 +465,7 @@ export class DirectoryWatcher {
     }
 
     clearTimeout(this.periodicTimer);
-    const delay = Math.max(this.options.rescanInterval, this.lastScanMs * SCAN_BUDGET);
+    const delay = Math.max(this.options.rescanInterval, this.scanCost() * SCAN_BUDGET);
     this.periodicTimer = setTimeout(() => this.requestScan(), delay);
   }
 
@@ -501,7 +511,10 @@ export class DirectoryWatcher {
           this.known.delete(name);
         }
       }
-      this.lastScanMs = performance.now() - startedAt;
+      this.scanTimes.push(performance.now() - startedAt);
+      if (this.scanTimes.length > SCAN_COST_SAMPLES) {
+        this.scanTimes.shift();
+      }
 
       await this.addCandidates(added, scanId, false);
       if (this.stopped) {
