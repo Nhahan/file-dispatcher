@@ -2,7 +2,7 @@
 
 ## 4.0.0
 
-A redesign for processing files dropped into a directory. Every created file is handled exactly once, after it has been fully written, on Linux, macOS, and Windows.
+A redesign for processing files dropped into a directory. Every created file is handled once, after it has been fully written, on Linux, macOS, and Windows.
 
 ### Breaking changes
 

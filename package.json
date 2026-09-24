@@ -1,7 +1,7 @@
 {
   "name": "file-dispatcher",
   "version": "4.0.0",
-  "description": "Process every file dropped into a directory exactly once, after it is fully written, even when fs.watch drops events.",
+  "description": "Process every file dropped into a directory once, after it is fully written, even when fs.watch drops events.",
   "type": "commonjs",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
