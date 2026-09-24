@@ -92,6 +92,9 @@ const VERIFY_BATCH = 256;
 const STAT_CONCURRENCY = 32;
 // Only these file systems report one entry under another spelling (8.3 names, letter case).
 const CASE_INSENSITIVE = process.platform === 'darwin' || process.platform === 'win32';
+// A 'rename' event means an entry was created or removed, except on macOS, which reports the flags of
+// recent changes together: a file created a moment ago and then modified is reported as renamed too.
+const EXACT_RENAME_EVENTS = process.platform !== 'darwin';
 // The callback API is several times faster than fs.promises for many small files.
 const statBigInt = promisify((file: string, callback: (error: NodeJS.ErrnoException | null, stats: fs.BigIntStats) => void) =>
   fs.stat(file, { bigint: true }, callback),
@@ -312,7 +315,7 @@ export class DirectoryWatcher {
       this.watchedIdentity = identityOf(fs.statSync(real, { bigint: true }));
       this.watchedName = path.basename(real);
       watcher = fs.watch(real, { persistent: true }, (event, name) =>
-        name ? this.queueName(name.toString(), event === 'rename') : this.requestScan(),
+        name ? this.queueName(name.toString(), event === 'rename' && EXACT_RENAME_EVENTS) : this.requestScan(),
       );
     } catch (error) {
       if (initial) {
@@ -654,7 +657,7 @@ export class DirectoryWatcher {
 
       // Another spelling: forget it and check the real entry instead.
       this.known.delete(entry.name);
-      this.queueName(path.basename(real), true);
+      this.queueName(path.basename(real), false);
     });
     return kept;
   }

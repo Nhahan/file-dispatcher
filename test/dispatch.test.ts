@@ -102,7 +102,7 @@ describe('dispatch', () => {
     fs.unlinkSync(path.join(dir, 'removed.txt'));
     fs.mkdirSync(path.join(dir, 'subdirectory'));
     write(dir, 'marker.txt');
-    await waitFor(() => handled.length === 1);
+    await waitFor(() => handled.length >= 1);
     await sleep(300);
 
     assert.deepEqual(files.map((file) => file.name), ['marker.txt']);
@@ -340,7 +340,7 @@ describe('dispatch', () => {
     const { files, handled } = collect({ filter: /\.json$/ });
 
     write(dir, 'a.json');
-    await waitFor(() => handled.length === 1);
+    await waitFor(() => handled.length >= 1);
     fs.renameSync(path.join(dir, 'a.json'), path.join(dir, 'b.json'));
     fs.linkSync(path.join(dir, 'b.json'), path.join(dir, 'c.json'));
     // A file that was already there is not new under another name either.
@@ -431,7 +431,7 @@ describe('dispatch', () => {
 
     write(dir, '.file-dispatcher-parked');
     write(dir, 'marker.txt');
-    await waitFor(() => handled.length === 1);
+    await waitFor(() => handled.length >= 1);
     await sleep(300);
 
     assert.deepEqual(handled, ['marker.txt']);
@@ -457,6 +457,31 @@ describe('dispatch', () => {
     await sleep(400);
 
     assert.equal(handled.length, 1);
+  });
+
+  test('does not handle a modified file again when macOS reports the change as a rename', async (t) => {
+    if (process.platform !== 'darwin') {
+      t.skip('only macOS reports modifications as renames');
+      return;
+    }
+    timing.rescanInterval = 0;
+    let emit: fs.WatchListener<string> = () => {};
+    t.mock.method(fs, 'watch', (_target: fs.PathLike, _options: fs.WatchOptions, listener: fs.WatchListener<string>) => {
+      emit = listener;
+      return Object.assign(new EventEmitter(), { close: () => {} });
+    });
+    write(dir, 'existing.txt', 'old');
+    const { handled } = collect();
+
+    await sleep(100);
+    fs.appendFileSync(path.join(dir, 'existing.txt'), ' modified');
+    emit('rename', 'existing.txt');
+    write(dir, 'marker.txt');
+    emit('rename', 'marker.txt');
+    await waitFor(() => handled.length >= 1);
+    await sleep(300);
+
+    assert.deepEqual(handled, ['marker.txt']);
   });
 
   test('finds a handled file replaced under its name even when every watch event is lost', async (t) => {
