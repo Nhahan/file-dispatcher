@@ -18,6 +18,12 @@ export interface ReadyFile {
 /** Names with this prefix are the library's own temporary names and are never handed out. */
 export const RESERVED_PREFIX = '.file-dispatcher-';
 
+/** Internal timing that tests shorten or turn off. */
+export const timing = {
+  /** Minimum milliseconds between full rescans that run even without watch events; `0` disables them. */
+  rescanInterval: 1000,
+};
+
 export interface WatcherOptions {
   directory: string;
   filter: (name: string) => boolean;
@@ -26,7 +32,6 @@ export interface WatcherOptions {
   /** Hand out ready files oldest first, after a scan confirms no older file was missed. */
   ordered: boolean;
   stabilityThreshold: number;
-  rescanInterval: number;
   /** Called when take() may return a file. */
   onAvailable: () => void;
   /** Called when the directory cannot be watched or listed. */
@@ -460,12 +465,12 @@ export class DirectoryWatcher {
   }
 
   private schedulePeriodic(): void {
-    if (this.stopped || this.options.rescanInterval === 0) {
+    if (this.stopped || timing.rescanInterval === 0) {
       return;
     }
 
     clearTimeout(this.periodicTimer);
-    const delay = Math.max(this.options.rescanInterval, this.scanCost() * SCAN_BUDGET);
+    const delay = Math.max(timing.rescanInterval, this.scanCost() * SCAN_BUDGET);
     this.periodicTimer = setTimeout(() => this.requestScan(), delay);
   }
 

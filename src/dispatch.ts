@@ -1,86 +1,64 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { promisify } from 'node:util';
 
-import { createFile, type DispatchedFile } from './file';
-import { onAbort, positiveInteger, resolveWatchOptions, type WatchOptions } from './options';
-import { DirectoryWatcher, RESERVED_PREFIX, statIdentity, toError, type ReadyFile } from './watcher';
+import { applyAction, parseAction, prepareAction, type ActionResult, type DoneAction, type ResolvedAction } from './actions';
+import { DirectoryWatcher, toError, type ReadyFile } from './watcher';
 
-// Looked up on each call rather than bound once, so the file system functions stay replaceable.
-const link = (existing: string, target: string) => promisify(fs.link)(existing, target);
-const unlink = (file: string) => promisify(fs.unlink)(file);
-const copyFile = (source: string, target: string, mode: number) => promisify(fs.copyFile)(source, target, mode);
-const mkdir = (directory: string) => promisify(fs.mkdir)(directory, { recursive: true });
-const rename = (source: string, target: string) => promisify(fs.rename)(source, target);
-
-// A failed done/failed action is retried with backoff; afterwards the file stays where it is.
+// A failed done action is retried with backoff; afterwards the file stays where it is.
 const ACTION_ATTEMPTS = 5;
 const ACTION_RETRY_MS = 250;
 
-/** What happens to a file after its handler: leave it, delete it, or move it into another directory. */
-export type FileAction = 'keep' | 'delete' | { moveTo: string };
-
-export interface HandlerContext {
-  /** Aborted when the dispatcher closes, so long-running handlers can stop early. */
-  readonly signal: AbortSignal;
+/** A file that was created in the watched directory and has finished being written. */
+export interface DispatchedFile {
+  /** Stays the same for the same file across restarts; use it to make handlers idempotent. */
+  readonly id: string;
+  /** File name within the watched directory. */
+  readonly name: string;
+  /** Absolute path where the file was found. */
+  readonly path: string;
+  /** Size in bytes once the file stopped changing. */
+  readonly size: number;
+  /** Birth time, or modification time where the file system does not record it. */
+  readonly createdAt: Date;
 }
 
-export type FileHandler = (file: DispatchedFile, context: HandlerContext) => unknown;
+export type FileHandler = (file: DispatchedFile) => unknown;
 
-export interface DispatchOptions extends WatchOptions {
+export interface DispatchOptions {
+  /** Only files whose names match are handled. Default: every file. */
+  filter?: RegExp | ((name: string) => boolean) | undefined;
   /**
    * Handlers running at once. With `1`, files are handled one at a time, oldest first, and each
    * handler finishes before the next file starts. Default: `1`.
    */
   concurrency?: number | undefined;
-  /** Applied after the handler succeeds. Default: `'keep'`. */
-  done?: FileAction | undefined;
-  /** Applied after the handler throws or rejects. Default: `'keep'`. */
-  failed?: FileAction | undefined;
   /**
-   * Also handle files that are already in the directory at start. Default: `true` when `done` removes
-   * files, since anything left over has not been handled; `false` when `done` is `'keep'`.
+   * Applied after the handler succeeds. When it removes files, files already in the directory at
+   * start are handled too, since they are left over from an earlier run. Default: `'keep'`.
    */
-  existing?: boolean | undefined;
+  done?: DoneAction | undefined;
+  /** Milliseconds a file's size and modification time must stay unchanged before it is handled. Default: `50`. */
+  stabilityThreshold?: number | undefined;
 }
 
-/** The `done` or `failed` action could not be applied after several attempts. The file is left in place. */
-export class ActionError extends Error {
-  override readonly name = 'ActionError';
-  /** Which action failed. */
-  readonly action: 'done' | 'failed';
-  /** The last file system error. */
-  override readonly cause: Error;
-  /** The handler's error when `action` is `'failed'`. */
-  readonly handlerError: Error | undefined;
+type ErrorListener = (error: Error, file: DispatchedFile | undefined) => void;
 
-  constructor(action: 'done' | 'failed', cause: Error, handlerError: Error | undefined) {
-    super(`Could not apply the ${action} action: ${cause.message}`, { cause });
-    this.action = action;
-    this.cause = cause;
-    this.handlerError = handlerError;
-  }
-}
-
-export interface DispatcherEvents {
-  /** The handler succeeded and `done` was applied. `movedTo` is the file's new path when `done` moved it. */
-  processed: [file: DispatchedFile, movedTo: string | undefined];
+export interface Dispatcher {
   /**
-   * The handler failed and `failed` was applied, or an action kept failing ({@link ActionError}).
-   * `movedTo` is the file's new path when `failed` moved it.
+   * `file` is the file whose handler threw, or whose `done` action kept failing; it is left in place.
+   * Without it, the directory could not be watched or listed, and dispatching resumes once it can.
    */
-  failed: [error: Error, file: DispatchedFile, movedTo: string | undefined];
-  /** The directory could not be watched or listed. Dispatching resumes once it can be listed again. */
-  error: [error: Error];
+  on(event: 'error', listener: ErrorListener): this;
+  once(event: 'error', listener: ErrorListener): this;
+  off(event: 'error', listener: ErrorListener): this;
+  addListener(event: 'error', listener: ErrorListener): this;
+  removeListener(event: 'error', listener: ErrorListener): this;
+  prependListener(event: 'error', listener: ErrorListener): this;
+  prependOnceListener(event: 'error', listener: ErrorListener): this;
+  emit(event: 'error', error: Error, file: DispatchedFile | undefined): boolean;
 }
-
-type Listener<K extends keyof DispatcherEvents> = (...args: DispatcherEvents[K]) => void;
-type MetaEvent = 'newListener' | 'removeListener';
-type MetaListener = (event: string | symbol, listener: (...args: any[]) => void) => void;
 
 /**
  * Calls `handler` once for every file created in `directory`, after the file has finished being
@@ -93,99 +71,63 @@ export function dispatch(directory: string, handler: FileHandler, options: Dispa
   return new Dispatcher(directory, handler, options);
 }
 
-type ResolvedAction = { type: 'keep' } | { type: 'delete' } | { type: 'move'; directory: string };
-
-/** Where the file ended up after its action. */
-type Outcome = { removed: true; movedTo: string | undefined } | { removed: false; replaced: boolean };
-
-export interface Dispatcher {
-  on<K extends keyof DispatcherEvents>(event: K, listener: Listener<K>): this;
-  on(event: MetaEvent, listener: MetaListener): this;
-  on(event: symbol, listener: (...args: any[]) => void): this;
-  once<K extends keyof DispatcherEvents>(event: K, listener: Listener<K>): this;
-  once(event: MetaEvent, listener: MetaListener): this;
-  once(event: symbol, listener: (...args: any[]) => void): this;
-  off<K extends keyof DispatcherEvents>(event: K, listener: Listener<K>): this;
-  off(event: MetaEvent, listener: MetaListener): this;
-  off(event: symbol, listener: (...args: any[]) => void): this;
-  addListener<K extends keyof DispatcherEvents>(event: K, listener: Listener<K>): this;
-  addListener(event: MetaEvent, listener: MetaListener): this;
-  addListener(event: symbol, listener: (...args: any[]) => void): this;
-  removeListener<K extends keyof DispatcherEvents>(event: K, listener: Listener<K>): this;
-  removeListener(event: MetaEvent, listener: MetaListener): this;
-  removeListener(event: symbol, listener: (...args: any[]) => void): this;
-  prependListener<K extends keyof DispatcherEvents>(event: K, listener: Listener<K>): this;
-  prependListener(event: MetaEvent, listener: MetaListener): this;
-  prependListener(event: symbol, listener: (...args: any[]) => void): this;
-  prependOnceListener<K extends keyof DispatcherEvents>(event: K, listener: Listener<K>): this;
-  prependOnceListener(event: MetaEvent, listener: MetaListener): this;
-  prependOnceListener(event: symbol, listener: (...args: any[]) => void): this;
-  emit<K extends keyof DispatcherEvents>(event: K, ...args: DispatcherEvents[K]): boolean;
-  emit(event: MetaEvent | symbol, ...args: any[]): boolean;
-}
-
 export class Dispatcher extends EventEmitter {
-  /** Absolute path of the watched directory. */
-  readonly directory: string;
-
   private readonly watcher: DirectoryWatcher;
   private readonly handler: FileHandler;
   private readonly concurrency: number;
   private readonly done: ResolvedAction;
-  private readonly failed: ResolvedAction;
-  private readonly abort = new AbortController();
+  // Cuts short the waits between action retries once closed.
+  private readonly closing = new AbortController();
   // Identifies the task a handler runs in, so close() called from a handler does not wait for itself.
   private readonly currentTask = new AsyncLocalStorage<symbol>();
   private readonly tasks = new Map<symbol, Promise<void>>();
   // Tasks whose handler is waiting in close(); they do not wait for each other.
   private readonly closingTasks = new Set<symbol>();
-  private stopListening: () => void = () => {};
   private closed = false;
 
   constructor(directory: string, handler: FileHandler, options: DispatchOptions) {
     super();
+    if (typeof directory !== 'string' || directory.length === 0) {
+      throw new TypeError('directory must be a non-empty string.');
+    }
     if (typeof handler !== 'function') {
       throw new TypeError('handler must be a function.');
     }
 
-    const resolved = resolveWatchOptions(directory, options);
-    this.directory = resolved.directory;
+    const resolved = path.resolve(directory);
     this.handler = handler;
     this.concurrency = positiveInteger(options.concurrency ?? 1, 'concurrency');
-    const done = parseAction(options.done, 'done');
-    const failed = parseAction(options.failed, 'failed');
+    this.done = parseAction(options.done);
 
     this.watcher = new DirectoryWatcher({
-      ...resolved,
-      existing: options.existing ?? done.type !== 'keep',
+      directory: resolved,
+      filter: toPredicate(options.filter),
+      stabilityThreshold: nonNegativeNumber(options.stabilityThreshold ?? 50, 'stabilityThreshold'),
+      // When done removes handled files, whatever is in the directory at start has not been handled.
+      existing: this.done.type !== 'keep',
       ordered: this.concurrency === 1,
       onAvailable: () => this.pump(),
-      onError: (error) => this.reportError(error),
+      onError: (error) => this.report(error, undefined),
     });
     this.watcher.start();
 
     try {
-      this.done = prepareAction(done, 'done', resolved.directory);
-      this.failed = prepareAction(failed, 'failed', resolved.directory);
+      prepareAction(this.done, resolved);
     } catch (error) {
       this.watcher.stop();
       throw error;
     }
-
-    this.stopListening = onAbort(resolved.signal, () => void this.close());
   }
 
   /**
-   * Stops watching and resolves once running handlers and their actions finish. Pending files are
-   * left in place. Handlers see their `signal` abort. Called from a handler, it does not wait for
-   * that handler.
+   * Stops watching and resolves once running handlers and their actions finish. Files not yet
+   * handled are left in place. Called from a handler, it does not wait for that handler.
    */
   close(): Promise<void> {
     if (!this.closed) {
       this.closed = true;
       this.watcher.stop();
-      this.stopListening();
-      this.abort.abort();
+      this.closing.abort();
     }
     const caller = this.currentTask.getStore();
     if (caller) {
@@ -205,13 +147,10 @@ export class Dispatcher extends EventEmitter {
       const id = Symbol(ready.name);
       const task = this.currentTask
         .run(id, () => this.process(ready))
-        .then((outcome) => {
+        .then((result) => {
           this.tasks.delete(id);
-          if (outcome.removed) {
-            this.watcher.release(ready, true);
-          } else {
-            this.watcher.release(ready, false, outcome.replaced);
-          }
+          const removed = result.type === 'removed' || result.type === 'moved';
+          this.watcher.release(ready, removed, result.type === 'replaced');
           this.pump();
         });
       this.tasks.set(id, task);
@@ -219,264 +158,79 @@ export class Dispatcher extends EventEmitter {
   }
 
   /** Handles one file. Never rejects. */
-  private async process(ready: ReadyFile): Promise<Outcome> {
-    const file = createFile(ready);
+  private async process(ready: ReadyFile): Promise<ActionResult> {
+    const file: DispatchedFile = {
+      id: ready.id,
+      name: ready.name,
+      path: ready.path,
+      size: ready.size,
+      createdAt: new Date(ready.createdMs),
+    };
 
-    let handlerError: Error | undefined;
     try {
-      await this.handler(file, { signal: this.abort.signal });
+      await this.handler(file);
     } catch (error) {
-      handlerError = toError(error);
+      this.report(toError(error), file);
+      return { type: 'kept' };
     }
 
-    const actionName = handlerError ? 'failed' : 'done';
-    const action = handlerError ? this.failed : this.done;
-    let result: ActionResult | undefined;
-    let lastError: Error | undefined;
-    for (let attempt = 1; attempt <= ACTION_ATTEMPTS; attempt += 1) {
+    for (let attempt = 1; ; attempt += 1) {
       try {
-        result = await applyAction(action, ready);
-        break;
+        return await applyAction(this.done, ready);
       } catch (error) {
-        lastError = toError(error);
-        if (attempt === ACTION_ATTEMPTS || this.closed || !(await sleep(ACTION_RETRY_MS * 2 ** (attempt - 1), this.abort.signal))) {
-          break;
+        if (attempt === ACTION_ATTEMPTS || !(await this.wait(ACTION_RETRY_MS * 2 ** (attempt - 1)))) {
+          this.report(toError(error), file);
+          return { type: 'kept' };
         }
       }
     }
-
-    if (!result) {
-      this.emitSafely('failed', new ActionError(actionName, lastError ?? new Error('closed'), handlerError), file, undefined);
-      // Left in place; handled again on the next start when `existing` is on.
-      return { removed: false, replaced: false };
-    }
-
-    const movedTo = result.type === 'moved' ? result.to : undefined;
-    if (handlerError) {
-      this.emitSafely('failed', handlerError, file, movedTo);
-    } else {
-      this.emitSafely('processed', file, movedTo);
-    }
-
-    if (result.type === 'replaced') {
-      // Another file took the name while the handler ran; it is new and was left alone.
-      return { removed: false, replaced: true };
-    }
-    return result.type === 'kept' ? { removed: false, replaced: false } : { removed: true, movedTo };
   }
 
-  private reportError(error: Error): void {
-    if (this.listenerCount('error') > 0) {
-      this.emit('error', error);
-    } else {
-      // Same as EventEmitter without an 'error' listener, but thrown outside the watcher's promises.
-      process.nextTick(() => {
-        throw error;
-      });
-    }
+  /** Resolves false when the dispatcher closes first. */
+  private wait(ms: number): Promise<boolean> {
+    return delay(ms, true, { signal: this.closing.signal }).catch(() => false);
   }
 
-  // A throwing listener must not stall the queue; surface it as an uncaught exception instead.
-  private emitSafely<K extends 'processed' | 'failed'>(event: K, ...args: DispatcherEvents[K]): void {
+  // Like EventEmitter without an 'error' listener, errors are thrown, but outside the dispatcher's own
+  // promises, so a throwing listener cannot stall the queue either.
+  private report(error: Error, file: DispatchedFile | undefined): void {
     try {
-      this.emit(event, ...args);
-    } catch (error) {
+      this.emit('error', error, file);
+    } catch (thrown) {
       process.nextTick(() => {
-        throw error;
+        throw thrown;
       });
     }
   }
 }
 
-function sleep(ms: number, signal: AbortSignal): Promise<boolean> {
-  return delay(ms, true, { signal }).catch(() => false);
+function toPredicate(filter: DispatchOptions['filter']): (name: string) => boolean {
+  if (filter === undefined) {
+    return () => true;
+  }
+  if (typeof filter === 'function') {
+    return filter;
+  }
+  if (filter instanceof RegExp) {
+    // Global and sticky patterns keep state between test() calls.
+    return (name) => {
+      filter.lastIndex = 0;
+      return filter.test(name);
+    };
+  }
+  throw new TypeError('filter must be a RegExp or a function.');
 }
 
-function parseAction(action: FileAction | undefined, name: string): ResolvedAction {
-  if (action === undefined || action === 'keep') {
-    return { type: 'keep' };
+function positiveInteger(value: number, name: string): number {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new TypeError(`${name} must be a positive integer.`);
   }
-  if (action === 'delete') {
-    return { type: 'delete' };
-  }
-  if (typeof action === 'object' && action !== null && typeof action.moveTo === 'string' && action.moveTo.length > 0) {
-    return { type: 'move', directory: path.resolve(action.moveTo) };
-  }
-  throw new TypeError(`${name} must be 'keep', 'delete', or { moveTo: string }.`);
+  return value;
 }
 
-function prepareAction(action: ResolvedAction, name: string, watched: string): ResolvedAction {
-  if (action.type !== 'move') {
-    return action;
+function nonNegativeNumber(value: number, name: string): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new TypeError(`${name} must be a non-negative number.`);
   }
-
-  fs.mkdirSync(action.directory, { recursive: true });
-  // Compare identities, not strings: another letter case or a symlink can name the watched directory,
-  // and moving files into it would hand them out again forever.
-  const target = fs.statSync(action.directory, { bigint: true });
-  const source = fs.statSync(watched, { bigint: true });
-  if (target.dev === source.dev && target.ino === source.ino) {
-    throw new TypeError(`${name}.moveTo must differ from the watched directory.`);
-  }
-  return action;
-}
-
-type ActionResult = { type: 'kept' } | { type: 'removed' } | { type: 'moved'; to: string } | { type: 'replaced' };
-
-/** Applies an action to the handled file, leaving alone a different file that took its name. */
-async function applyAction(action: ResolvedAction, file: ReadyFile): Promise<ActionResult> {
-  if (action.type === 'keep') {
-    return { type: 'kept' };
-  }
-
-  const identity = await statIdentity(file.path);
-  if (identity === undefined) {
-    // The handler removed or moved the file itself.
-    return { type: 'removed' };
-  }
-  if (identity !== file.identity) {
-    return { type: 'replaced' };
-  }
-
-  if (action.type === 'delete') {
-    return (await removeExact(file)) === 'replaced' ? { type: 'replaced' } : { type: 'removed' };
-  }
-
-  await mkdir(action.directory);
-  return moveWithoutOverwriting(file, action.directory);
-}
-
-// Next suffix to try per target name, so repeated names do not rescan -1, -2, ... from the start.
-const nextSuffix = new Map<string, number>();
-
-/**
- * Moves the file into `directory` under its name, or name-1, name-2, ... when taken. A hard link fails
- * atomically when the name is taken, so concurrent movers never overwrite each other.
- */
-async function moveWithoutOverwriting(file: ReadyFile, directory: string): Promise<ActionResult> {
-  const extension = path.extname(file.name);
-  const stem = file.name.slice(0, file.name.length - extension.length);
-  const key = path.join(directory, file.name);
-  for (let index = 0; ; index += 1) {
-    if (index === 1) {
-      index = Math.max(1, nextSuffix.get(key) ?? 1);
-    }
-    const target = path.join(directory, index === 0 ? file.name : `${stem}-${index}${extension}`);
-
-    try {
-      await link(file.path, target);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'EEXIST') {
-        continue;
-      }
-      if (code === 'EXDEV' || code === 'EPERM' || code === 'ENOTSUP' || code === 'ENOSYS' || code === 'EOPNOTSUPP') {
-        // No hard link across file systems or on this one: copy without overwriting instead.
-        const copied = await copyWithoutOverwriting(file, target);
-        if (copied === 'taken') {
-          continue;
-        }
-        return copied;
-      }
-      throw error;
-    }
-
-    if (index > 0) {
-      if (nextSuffix.size > 10_000) {
-        nextSuffix.clear();
-      }
-      nextSuffix.set(key, index + 1);
-    }
-    // The link names whatever file held the name at that moment; keep it only if it is the handled one.
-    if ((await statIdentity(target)) !== file.identity) {
-      await unlink(target).catch(ignoreMissing);
-      return { type: 'replaced' };
-    }
-    // The handled file is safely at the target; drop the source name without touching a newer file.
-    await removeExact(file);
-    return { type: 'moved', to: target };
-  }
-}
-
-async function copyWithoutOverwriting(file: ReadyFile, target: string): Promise<ActionResult | 'taken'> {
-  try {
-    await copyFile(file.path, target, fs.constants.COPYFILE_EXCL);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-      return 'taken';
-    }
-    // Do not leave a partial copy behind.
-    await unlink(target).catch(() => undefined);
-    throw error;
-  }
-
-  let removed: 'removed' | 'replaced' | 'missing';
-  try {
-    removed = await removeExact(file);
-  } catch (error) {
-    // Keep exactly one copy: the retry moves the source again.
-    await unlink(target).catch(() => undefined);
-    throw error;
-  }
-  if (removed === 'replaced') {
-    // Another file took the name, so the copy may not be of the handled file; the new file is kept.
-    await unlink(target).catch(ignoreMissing);
-    return { type: 'replaced' };
-  }
-  return { type: 'moved', to: target };
-}
-
-/**
- * Removes the handled file's name without ever removing a different file that took the name: the
- * name is first renamed away atomically, and whatever was renamed is put back unless it is the
- * handled file.
- */
-async function removeExact(file: ReadyFile): Promise<'removed' | 'replaced' | 'missing'> {
-  const parked = path.join(path.dirname(file.path), `${RESERVED_PREFIX}${randomUUID()}`);
-  try {
-    await rename(file.path, parked);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return 'missing';
-    }
-    throw error;
-  }
-
-  if ((await statIdentity(parked)) === file.identity) {
-    await unlink(parked);
-    return 'removed';
-  }
-  await restore(parked, file.path);
-  return 'replaced';
-}
-
-// Puts a parked file back under its name, or under name-1, name-2, ... if that name was taken meanwhile.
-async function restore(parked: string, original: string): Promise<void> {
-  const extension = path.extname(original);
-  const stem = original.slice(0, original.length - extension.length);
-  for (let index = 0; ; index += 1) {
-    const target = index === 0 ? original : `${stem}-${index}${extension}`;
-    try {
-      await link(parked, target);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'EEXIST') {
-        continue;
-      }
-      if (fs.existsSync(target)) {
-        continue;
-      }
-      // No hard links here: rename, which is safe once the name is known to be free.
-      await rename(parked, target);
-      return;
-    }
-    await unlink(parked);
-    return;
-  }
-}
-
-function ignoreMissing(error: NodeJS.ErrnoException): void {
-  if (error.code !== 'ENOENT') {
-    throw error;
-  }
+  return value;
 }

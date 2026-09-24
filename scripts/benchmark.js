@@ -6,7 +6,10 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { promisify } = require('util');
 const { dispatch } = require('../dist');
+
+const readFile = promisify(fs.readFile);
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((arg) => {
@@ -59,7 +62,7 @@ function watchWithFs(dir, record) {
 }
 
 function watchWithDispatcher(dir, record) {
-  const dispatcher = dispatch(dir, async (file) => record(file.name, await file.text()), { concurrency: 16 });
+  const dispatcher = dispatch(dir, async (file) => record(file.name, await readFile(file.path, 'utf8')), { concurrency: 16 });
   return () => dispatcher.close();
 }
 
